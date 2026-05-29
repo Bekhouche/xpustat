@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xpustat"
+version = "0.1.0"
+description = "A unified stat tool for NVIDIA, AMD, Intel, Huawei, Hygon, Cambricon and Moore Threads accelerators"
+readme = "README.md"
+authors = [
+    { name = "Salah Eddine Bekhouche" },
+    { name = "Hichem Telli" },
+    { email = "bekhouchesalah@gmail.com" },
+]
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = ["psutil>=5.9"]
+keywords = ["gpu", "npu", "accelerator", "monitoring", "nvidia", "amd", "intel", "huawei", "ascend"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+# Native SDK backends — faster than subprocess, no extra build tools needed
+nvidia = ["pynvml>=11.0"]
+amd    = ["amdsmi"]
+# Install everything at once: pip install xpustat[fast]
+fast   = ["pynvml>=11.0", "amdsmi"]
+
+[project.scripts]
+xpustat = "xpustat.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Bekhouche/xpustat"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["xpustat*"]
