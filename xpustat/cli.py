@@ -196,7 +196,14 @@ def _render(
     show_arch: bool = False,
     no_header: bool = False,
     active_vendors: Optional[List[str]] = None,
-) -> List[str]:
+) -> tuple:
+    n = 0
+
+    def _p(s: str = "") -> None:
+        nonlocal n
+        print(s)
+        n += 1
+
     collection = query_all(parallel=True, vendors=active_vendors)
 
     # ── header ─────────────────────────────────────────────────────────────
@@ -207,8 +214,8 @@ def _render(
         dots      = _dim("  ·  ")
         header    = f"{title}{dots}{_bold(hostname)}{dots}{now}"
         plain_len = len(f"xpustat {__version__}  ·  {hostname}  ·  {now}")
-        print(header)
-        print(_dim("─" * plain_len))
+        _p(header)
+        _p(_dim("─" * plain_len))
 
     visible = [
         (v, s) for v, s in _VENDORS.items()
@@ -217,8 +224,8 @@ def _render(
     ]
 
     if not visible:
-        print(_dim("  no accelerators detected"))
-        return
+        _p(_dim("  no accelerators detected"))
+        return [], n
 
     show_procs = show_user or show_pid or show_cmd
 
@@ -257,7 +264,7 @@ def _render(
             if health and health != "OK":
                 line += f"  {_c('31', health)}"
 
-            print(line)
+            _p(line)
 
             # ── process sub-lines ───────────────────────────────────────────
             if show_procs and procs:
@@ -266,17 +273,17 @@ def _render(
                     _proc_repr(p, show_user, show_pid, show_cmd)
                     for p in procs
                 )
-                print(f"{indent}{_dim('└─')} {proc_str}")
+                _p(f"{indent}{_dim('└─')} {proc_str}")
 
             # ── SDK speed tips (only shown when header is visible) ─────────────────
     if not no_header:
         tips = _sdk_tips(collection)
         if tips:
-            print(_dim("  tip: install native SDK for faster queries:"))
+            _p(_dim("  tip: install native SDK for faster queries:"))
             for tip in tips:
-                print(_dim(f"       {tip}"))
+                _p(_dim(f"       {tip}"))
 
-    return [v for v, s in visible]
+    return [v for v, s in visible], n
 
 
 # ---------------------------------------------------------------------------
@@ -309,10 +316,11 @@ def print_xpustat(
     )
 
     if interval is None or interval <= 0:
-        _render(**kwargs)
+        _render(**kwargs)  # return value (vendors, lines) unused in single-shot
         return
 
     # ── watch loop ──────────────────────────────────────────────────────────
+    _CLEAR = "cls" if os.name == "nt" else "clear"
     iteration = 0
     _stop = False
     active_vendors = None
@@ -326,12 +334,12 @@ def print_xpustat(
     try:
         while not _stop:
             if iteration > 0:
-                sys.stdout.write("\033[H\033[J")
                 sys.stdout.flush()
-            
+                os.system(_CLEAR)
+
             kwargs["active_vendors"] = active_vendors
-            active_vendors = _render(**kwargs)
-            
+            active_vendors, _ = _render(**kwargs)
+
             print(_dim(f"  refreshing every {interval}s  ·  Ctrl+C to quit"))
             iteration += 1
             if count and iteration >= count:

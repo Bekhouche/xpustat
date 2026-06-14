@@ -129,7 +129,17 @@ class HuaweiNPUStatCollection:
 # ---------------------------------------------------------------------------
 
 def _query_ascend_dmi(cls: type) -> Optional[List[HuaweiNPUStat]]:
-    """Parse `ascend-dmi -i --format json` into HuaweiNPUStat objects."""
+    """Parse `ascend-dmi -i --format json` into HuaweiNPUStat objects.
+
+    Handles two JSON shapes emitted by different ascend-dmi versions:
+
+    • Server format (ascend-dmi ≥ 7.x):
+        hardware_brief.server.devices[]  — memory as "65536 MB" strings,
+        power under power_information.realtime_power, temp as "50 C".
+
+    • Card-list format (older ascend-dmi):
+        hardware_brief[]  — a list of cards, each with a chip_list[].
+    """
     out = cls._run(["ascend-dmi", "-i", "--format", "json"])
     if out is None:
         return None
@@ -138,29 +148,52 @@ def _query_ascend_dmi(cls: type) -> Optional[List[HuaweiNPUStat]]:
     except json.JSONDecodeError:
         return None
 
+    hw = data.get("hardware_brief", {})
     npus: List[HuaweiNPUStat] = []
-    for card in data.get("hardware_brief", []):
-        npu_id = int(card.get("card_id", 0))
-        card_type = card.get("type", "")
-        card_power = _safe_float(card.get("power"))
 
-        for chip in card.get("chip_list", []):
-            chip_id = int(chip.get("chip_id", 0))
-            ai_info = chip.get("ai_core_information", {})
-            mem_info = chip.get("memory_information", {})
-
+    # ── Server format: hardware_brief is a dict ──────────────────────────────
+    if isinstance(hw, dict):
+        server = hw.get("server", {})
+        card_type = server.get("type") or None
+        for dev in server.get("devices", []):
+            ai_info  = dev.get("ai_core_information", {})
+            mem_info = dev.get("memory_information", {})
+            pwr_info = dev.get("power_information", {})
             npus.append(HuaweiNPUStat(
-                npu_id=npu_id,
-                chip_id=chip_id,
-                name=f"Ascend {chip.get('chip_name', '')}".strip(),
-                mem_used_mb=_safe_int(mem_info.get("memory_used")),
-                mem_total_mb=_safe_int(mem_info.get("memory_total")),
-                health=chip.get("health"),
-                temp_c=_safe_int(chip.get("temperature")),
-                power_w=_safe_float(chip.get("realtime_power")) or card_power,
+                npu_id=int(dev.get("device_id", 0)),
+                chip_id=int(dev.get("chip_id", 0)),
+                name=dev.get("chip_name", "Ascend NPU"),
+                mem_used_mb=_parse_mb(mem_info.get("used", "0 MB")),
+                mem_total_mb=_parse_mb(mem_info.get("total", "0 MB")),
+                health=dev.get("health"),
+                temp_c=_parse_int_prefix(dev.get("temperature", "")),
+                power_w=_parse_float_prefix(pwr_info.get("realtime_power", "")),
                 ai_core_pct=_safe_int(ai_info.get("ai_core_usage")),
-                card_type=card_type or None,
+                card_type=card_type,
             ))
+
+    # ── Card-list format: hardware_brief is a list ───────────────────────────
+    elif isinstance(hw, list):
+        for card in hw:
+            npu_id     = int(card.get("card_id", 0))
+            card_type  = card.get("type", "") or None
+            card_power = _safe_float(card.get("power"))
+            for chip in card.get("chip_list", []):
+                ai_info  = chip.get("ai_core_information", {})
+                mem_info = chip.get("memory_information", {})
+                npus.append(HuaweiNPUStat(
+                    npu_id=npu_id,
+                    chip_id=int(chip.get("chip_id", 0)),
+                    name=f"Ascend {chip.get('chip_name', '')}".strip(),
+                    mem_used_mb=_safe_int(mem_info.get("memory_used")),
+                    mem_total_mb=_safe_int(mem_info.get("memory_total")),
+                    health=chip.get("health"),
+                    temp_c=_safe_int(chip.get("temperature")),
+                    power_w=_safe_float(chip.get("realtime_power")) or card_power,
+                    ai_core_pct=_safe_int(ai_info.get("ai_core_usage")),
+                    card_type=card_type,
+                ))
+
     return npus if npus else None
 
 
@@ -237,15 +270,22 @@ def _parse_npu_smi_info(output: str) -> List[HuaweiNPUStat]:
 
 
 def _fetch_card_type(cls: type, npu_id: int) -> Optional[str]:
-    """Query `npu-smi info -t product -i <npu_id>` for the card product name."""
-    out = cls._run(["npu-smi", "info", "-t", "product", "-i", str(npu_id)])
-    if not out:
-        return None
-    for line in out.splitlines():
-        if ":" in line:
-            _, _, val = line.partition(":")
+    """Return a card type string from npu-smi, trying 'product' then 'board'."""
+    for qtype in ("product", "board"):
+        out = cls._run(["npu-smi", "info", "-t", qtype, "-i", str(npu_id)])
+        if not out:
+            continue
+        for line in out.splitlines():
+            if ":" not in line:
+                continue
+            key, _, val = line.partition(":")
             v = val.strip()
-            if v and v not in ("N/A", ""):
+            if not v or v in ("N/A", "NA", ""):
+                continue
+            if qtype == "board":
+                if "product name" in key.lower():
+                    return v
+            else:
                 return v
     return None
 
@@ -266,6 +306,26 @@ def _safe_float(v) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_mb(v) -> int:
+    """Parse '65536 MB' or plain integer → int MB."""
+    try:
+        return int(str(v).split()[0])
+    except (IndexError, ValueError):
+        return 0
+
+
+def _parse_int_prefix(v) -> Optional[int]:
+    """Parse '50 C' or '50' → 50."""
+    m = re.match(r"(\d+)", str(v).strip())
+    return int(m.group(1)) if m else None
+
+
+def _parse_float_prefix(v) -> Optional[float]:
+    """Parse '104.900002 W' or '104.9' → 104.9."""
+    m = re.match(r"([\d.]+)", str(v).strip())
+    return float(m.group(1)) if m else None
 
 
 if __name__ == "__main__":
