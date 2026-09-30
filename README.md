@@ -104,6 +104,10 @@ gpus = NvidiaGPUStatCollection.new_query()
 
 ## Version history
 
+### 0.2.0
+- Fix AMD GPUs not being detected when `amd-smi` reports `"N/A"` sections or idle GPUs (e.g. ROCm 10 with an iGPU present)
+- Flicker-free watch mode: frames are redrawn in place on the alternate screen
+
 ### 0.1.0
 - Initial release
 - Support for NVIDIA, AMD, Intel Gaudi, Intel Arc/GPU, Huawei Ascend, Hygon DCU, Cambricon MLU, Moore Threads

@@ -274,27 +274,30 @@ class AMDGPUStatCollection:
         gpus: List[AMDGPUStat] = []
         for idx, static in static_by_index.items():
             metric = metric_by_index.get(idx, {})
-            asic   = static.get("asic", {})
+            asic   = _section(static, "asic")
 
             name = (
                 asic.get("market_name")
-                or static.get("board", {}).get("model_number")
+                or _section(static, "board").get("model_number")
                 or "Unknown AMD GPU"
             )
             gfx_target = asic.get("target_graphics_version") or None
 
-            mem   = metric.get("mem_usage", {})
-            usage = metric.get("usage", {})
-            pwr   = metric.get("power", {})
-            temp  = metric.get("temperature", {})
+            mem   = _section(metric, "mem_usage")
+            usage = _section(metric, "usage")
+            pwr   = _section(metric, "power")
+            temp  = _section(metric, "temperature")
 
             processes: List[ProcessInfo] = []
             for p_item in process_by_index.get(idx, []):
                 p = p_item.get("process_info", {})
+                # Idle GPUs report the string "No running processes detected"
+                if not isinstance(p, dict):
+                    continue
                 pid = p.get("pid")
                 if pid is None:
                     continue
-                vram_mem = p.get("memory_usage", {}).get("vram_mem", {}).get("value", 0)
+                vram_mem = _section(_section(p, "memory_usage"), "vram_mem").get("value", 0)
                 mem_mb = int(vram_mem) // (1024 * 1024) if vram_mem else None
                 cmd = p.get("name", "")
                 username, command = enrich_process(pid, cmd)
@@ -325,6 +328,13 @@ class AMDGPUStatCollection:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _section(data: dict, key: str) -> dict:
+    """Return ``data[key]`` if it is a dict; amd-smi emits ``"N/A"`` for
+    sections a device does not support (e.g. ``usage`` on APUs)."""
+    value = data.get(key)
+    return value if isinstance(value, dict) else {}
+
 
 def _mb(field) -> int:
     if isinstance(field, dict):

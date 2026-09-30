@@ -4,7 +4,9 @@ xpustat CLI — display all detected accelerators in the terminal.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
+import io
 import os
 import signal
 import socket
@@ -320,6 +322,10 @@ def print_xpustat(
         return
 
     # ── watch loop ──────────────────────────────────────────────────────────
+    # On a POSIX tty, draw each frame in place on the alternate screen:
+    # render into a buffer first, then overwrite the previous frame in a
+    # single write, so the screen is never blank while devices are queried.
+    in_place = sys.stdout.isatty() and os.name != "nt"
     _CLEAR = "cls" if os.name == "nt" else "clear"
     iteration = 0
     _stop = False
@@ -331,16 +337,29 @@ def print_xpustat(
 
     signal.signal(signal.SIGINT, _handle_sigint)
 
+    if in_place:
+        sys.stdout.write("\033[?1049h\033[?25l")  # alt screen, hide cursor
+
     try:
         while not _stop:
-            if iteration > 0:
-                sys.stdout.flush()
-                os.system(_CLEAR)
-
             kwargs["active_vendors"] = active_vendors
-            active_vendors, _ = _render(**kwargs)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                active_vendors, _ = _render(**kwargs)
+                print(_dim(f"  refreshing every {interval}s  ·  Ctrl+C to quit"))
+            frame = buf.getvalue()
 
-            print(_dim(f"  refreshing every {interval}s  ·  Ctrl+C to quit"))
+            if in_place:
+                # home, then clear to end of each line and below the frame
+                lines = frame.rstrip("\n").split("\n")
+                sys.stdout.write("\033[H" + "\033[K\n".join(lines) + "\033[K\033[J")
+            else:
+                if iteration > 0:
+                    sys.stdout.flush()
+                    os.system(_CLEAR)
+                sys.stdout.write(frame)
+            sys.stdout.flush()
+
             iteration += 1
             if count and iteration >= count:
                 break
@@ -349,6 +368,10 @@ def print_xpustat(
                 time.sleep(0.1)
     except Exception:
         pass
+    finally:
+        if in_place:
+            sys.stdout.write("\033[?25h\033[?1049l")  # show cursor, main screen
+            sys.stdout.flush()
 
 
 # ---------------------------------------------------------------------------
