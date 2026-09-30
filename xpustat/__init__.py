@@ -33,7 +33,7 @@ Quick start::
     print(stats.to_json(metadata=True))
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __version_tuple__ = (0, 1, 0)
 
 from ._process import ProcessInfo

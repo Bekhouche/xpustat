@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xpustat"
-version = "0.1.0"
+version = "0.2.0"
 description = "A unified stat tool for NVIDIA, AMD, Intel, Huawei, Hygon, Cambricon and Moore Threads accelerators"
 readme = "README.md"
 authors = [
