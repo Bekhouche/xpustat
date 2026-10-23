@@ -51,6 +51,10 @@ _VENDORS: dict = {
     "hygon":        ("33",  "HYGON"),     # yellow
     "cambricon":    ("96",  "CAMBR."),    # bright cyan
     "moorethreads": ("95",  "MTT"),       # bright magenta
+    "apple":        ("37",  "APPLE"),     # white
+    "neuron":       ("94",  "NEURON"),    # bright blue
+    "tpu":          ("92",  "TPU"),       # bright green
+    "tenstorrent":  ("93",  "TENST."),    # bright yellow
 }
 
 _LBL_W = max(len(lbl) for _, lbl in _VENDORS.values())
@@ -96,6 +100,19 @@ def _fields(vendor: str, dev):
     if vendor == "moorethreads":
         return str(dev.gpu_id), dev.name, None, \
                dev.mem_used_mb, dev.mem_total_mb, None, None, None, processes
+    if vendor == "apple":
+        return str(dev.gpu_index), dev.name, _fmt_cores(dev.gpu_cores), \
+               dev.mem_used_mb, dev.mem_total_mb, \
+               dev.util_pct, dev.temp_c, dev.power_w, processes
+    if vendor == "neuron":
+        return str(dev.neuron_device), dev.name, _fmt_cores(dev.nc_count), \
+               dev.mem_used_mb, dev.mem_total_mb, None, None, None, processes
+    if vendor == "tpu":
+        return str(dev.device_id), dev.name, None, \
+               dev.mem_used_mb, dev.mem_total_mb, dev.util_pct, None, None, processes
+    if vendor == "tenstorrent":
+        return str(dev.tt_device), dev.name, None, \
+               dev.mem_used_mb, dev.mem_total_mb, None, dev.temp_c, dev.power_w, processes
     return "?", str(dev), None, 0, 0, None, None, None, []
 
 
@@ -107,6 +124,11 @@ def _fmt_cc(cc: Optional[str]) -> Optional[str]:
 def _fmt_gfx(gfx: Optional[str]) -> Optional[str]:
     """Format ROCm GFX target for display, e.g. 'gfx1100'."""
     return gfx if gfx else None
+
+
+def _fmt_cores(cores: Optional[int]) -> Optional[str]:
+    """Format an Apple GPU core count for display, e.g. '10-core'."""
+    return f"{cores}-core" if cores else None
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +175,8 @@ def _proc_repr(p, show_user: bool, show_pid: bool, show_cmd: bool) -> str:
     if show_user:
         parts.append(_c("32", p.username))
     if show_cmd:
+        if show_user:
+            parts.append(_dim(":"))      # user:command, gpustat style
         parts.append(_c("1", p.command))
     if show_pid:
         parts.append(_dim(f"/{p.pid}"))
@@ -172,9 +196,9 @@ def _sdk_tips(collection) -> List[str]:
     """
     tips: List[str] = []
     if len(collection.nvidia) > 0 and not _HAS_PYNVML:
-        tips.append("pip install pynvml    → faster NVIDIA queries (direct NVML, no subprocess)")
+        tips.append("pip install nvidia-ml-py  → faster NVIDIA queries (direct NVML, no subprocess)")
     if len(collection.amd) > 0 and not _HAS_AMDSMI:
-        tips.append("pip install amdsmi    → faster AMD queries (ROCm Python bindings, no subprocess)")
+        tips.append("pip install amdsmi        → faster AMD queries (ROCm Python bindings, no subprocess)")
     return tips
 
 
@@ -366,8 +390,6 @@ def print_xpustat(
             deadline = time.monotonic() + interval
             while not _stop and time.monotonic() < deadline:
                 time.sleep(0.1)
-    except Exception:
-        pass
     finally:
         if in_place:
             sys.stdout.write("\033[?25h\033[?1049l")  # show cursor, main screen
@@ -399,6 +421,8 @@ def main() -> None:
             "  xpustat -i 1 -n 10           # 10 refreshes then exit\n"
             "  xpustat -f nvidia amd        # show only NVIDIA and AMD\n"
             "  xpustat --json               # raw JSON\n"
+            "  xpustat --prometheus         # Prometheus text format, once\n"
+            "  xpustat --serve-prometheus 9400   # /metrics endpoint for Prometheus\n"
         ),
     )
 
@@ -413,7 +437,7 @@ def main() -> None:
     parser.add_argument("-t", "--show-temp",  action="store_true", help="Show chip temperature (°C).")
     parser.add_argument("-P", "--show-power", action="store_true", help="Show power draw (W).")
     parser.add_argument("-A", "--show-arch",  action="store_true",
-                        help="Show compute architecture (CUDA cc / ROCm gfx target).")
+                        help="Show compute architecture (CUDA cc / ROCm gfx target / Apple GPU cores).")
 
     # ── layout / filtering ───────────────────────────────────────────────────
     parser.add_argument("-i", "--interval", "--watch", nargs="?", type=float, default=0,
@@ -428,9 +452,23 @@ def main() -> None:
 
     # ── output format ────────────────────────────────────────────────────────
     parser.add_argument("--json",    action="store_true", help="Print raw JSON.")
+    parser.add_argument("--prometheus", action="store_true",
+                        help="Print metrics in Prometheus text format and exit.")
+    parser.add_argument("--serve-prometheus", metavar="PORT", type=int, default=None,
+                        help="Serve Prometheus metrics at http://0.0.0.0:PORT/metrics (fresh query per scrape).")
     parser.add_argument("--version", action="version",   version=f"xpustat {__version__}")
 
     args = parser.parse_args()
+
+    if args.prometheus:
+        from .prometheus import to_prometheus
+        sys.stdout.write(to_prometheus(query_all(parallel=True)))
+        return
+
+    if args.serve_prometheus is not None:
+        from .prometheus import serve
+        serve(port=args.serve_prometheus)
+        return
 
     if args.json:
         import json

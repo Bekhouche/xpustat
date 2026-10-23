@@ -1,9 +1,13 @@
 import shutil
 import subprocess
+from ._device import DeviceMixin
 
 
-class GaudiAIPStat:
+class GaudiAIPStat(DeviceMixin):
     """Parse AIP info from hl-smi for a single Intel Gaudi accelerator."""
+
+    vendor = "gaudi"
+    _index_attr = "aip_index"
 
     def __init__(self, aip_index: int, name: str, mem_used_mb: int, mem_total_mb: int):
         self.aip_index = aip_index
@@ -17,6 +21,7 @@ class GaudiAIPStat:
             "name": self.name,
             "mem_used_mb": self.mem_used_mb,
             "mem_total_mb": self.mem_total_mb,
+            "mem_free_mb": self.mem_free_mb,
         }
 
     def __repr__(self) -> str:
@@ -49,6 +54,9 @@ class GaudiAIPStatCollection:
 
     def __iter__(self):
         return iter(self.aips)
+
+    def __getitem__(self, index):
+        return self.aips[index]
 
     def __repr__(self) -> str:
         return f"GaudiAIPStatCollection({self.aips!r})"

@@ -32,7 +32,7 @@ test:
 
 about:
   home: https://github.com/Bekhouche/xpustat
-  summary: 'A unified stat tool for NVIDIA, AMD, Intel, Huawei, Hygon, Cambricon and Moore Threads accelerators'
+  summary: 'A unified stat tool for NVIDIA, AMD, Intel, Huawei, Hygon, Cambricon, Moore Threads, Apple Silicon, AWS Neuron, Google TPU and Tenstorrent accelerators'
   license: MIT
   license_family: MIT
   license_file: LICENSE

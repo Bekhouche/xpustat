@@ -3,10 +3,14 @@ import re
 import shutil
 import subprocess
 from typing import Optional
+from ._device import DeviceMixin
 
 
-class IntelGPUStat:
+class IntelGPUStat(DeviceMixin):
     """Parse GPU info from xpu-smi for a single Intel Arc / Data Center GPU."""
+
+    vendor = "intel"
+    _index_attr = "device_id"
 
     def __init__(self, device_id: int, name: str, mem_used_mb: int, mem_total_mb: int):
         self.device_id = device_id
@@ -20,6 +24,7 @@ class IntelGPUStat:
             "name": self.name,
             "mem_used_mb": self.mem_used_mb,
             "mem_total_mb": self.mem_total_mb,
+            "mem_free_mb": self.mem_free_mb,
         }
 
     def __repr__(self) -> str:
@@ -49,6 +54,9 @@ class IntelGPUStatCollection:
 
     def __iter__(self):
         return iter(self.gpus)
+
+    def __getitem__(self, index):
+        return self.gpus[index]
 
     def __repr__(self) -> str:
         return f"IntelGPUStatCollection({self.gpus!r})"

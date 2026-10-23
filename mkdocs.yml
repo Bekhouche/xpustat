@@ -1,0 +1,23 @@
+site_name: xpustat
+site_description: A unified accelerator stat tool for NVIDIA, AMD, Intel, Huawei, Hygon, Cambricon, Moore Threads, Apple Silicon, AWS Neuron, Google TPU and Tenstorrent.
+repo_url: https://github.com/Bekhouche/xpustat
+docs_dir: docs
+
+nav:
+  - Overview: index.md
+  - Installation: installation.md
+  - Command line: cli.md
+  - Python API: python-api.md
+  - Device selection: device-selection.md
+  - Prometheus: prometheus.md
+  - Backends: backends.md
+  - Contributing: contributing.md
+
+theme:
+  name: readthedocs
+
+markdown_extensions:
+  - tables
+  - fenced_code
+  - toc:
+      permalink: true

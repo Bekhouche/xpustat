@@ -3,7 +3,7 @@
 [![GitHub](https://img.shields.io/badge/GitHub-Bekhouche%2Fxpustat-blue?logo=github)](https://github.com/Bekhouche/xpustat)
 **Authors:** Salah Eddine Bekhouche, Hichem Telli
 
-A unified accelerator stat tool — think `gpustat`, but for every vendor.
+A unified accelerator stat tool: `gpustat`, but for every vendor.
 
 ## Supported backends
 
@@ -17,10 +17,22 @@ A unified accelerator stat tool — think `gpustat`, but for every vendor.
 | 🔲 Untested | Hygon | DCU | `hy-smi` | `hygon` |
 | 🔲 Untested | Cambricon | MLU | `cnmon` | `cambricon` |
 | 🔲 Untested | Moore Threads | MTT GPU | `mthreads-gmi` | `moorethreads` |
+| ✅ Tested | Apple | Apple M5 (10-core GPU) | IOKit (built into macOS) | `apple` |
+| 🔲 Untested | AWS | Neuron (Inferentia / Trainium) | `neuron-ls` | `neuron` |
+| 🔲 Untested | Google | Cloud TPU (v4 – v6e) | `tpu-info` | `tpu` |
+| 🔲 Untested | Tenstorrent | Wormhole / Blackhole | `tt-smi` | `tenstorrent` |
 
-> **Legend:** ✅ Tested on real hardware — 🔲 Implemented, awaiting hardware test
+> **Legend:** ✅ tested on real hardware; 🔲 implemented, awaiting a hardware test
 >
 > Backends whose management tool is not installed are silently skipped.
+>
+> **Apple Silicon note:** the GPU shares unified memory with the CPU, so `mem_total_mb` is the
+> machine's total RAM and `mem_used_mb` is the slice currently held by the GPU driver.
+> macOS exposes GPU temperature, power, and per-process usage only to root (`powermetrics`),
+> so those columns show `N/A` on Macs. Discrete GPUs in Intel Macs report real VRAM.
+>
+> **Neuron / Tenstorrent note:** `neuron-ls` and `tt-smi` report inventory, processes and telemetry
+> but not live memory usage, so those backends show memory as `0` / `N/A`.
 
 ### Running Vendor Hardware Tests
 
@@ -34,6 +46,10 @@ python vendor_devices_tests/test_huawei.py
 python vendor_devices_tests/test_nvidia.py
 ```
 If the test successfully outputs your hardware metrics, please let us know so we can update the backend status to **✅ Tested**!
+
+## Documentation
+
+The full documentation is in [`docs/`](docs/index.md): [installation](docs/installation.md), [command line](docs/cli.md), [Python API](docs/python-api.md), [device selection](docs/device-selection.md), [Prometheus](docs/prometheus.md), [backends](docs/backends.md) and [contributing](docs/contributing.md). `mkdocs serve` renders it as a site.
 
 ## Install
 
@@ -58,6 +74,8 @@ xpustat -a                   # show everything (util, temp, power, arch, user, p
 xpustat -f nvidia amd        # show only NVIDIA and AMD
 xpustat --no-color           # plain text, no ANSI codes
 xpustat --json               # raw JSON output
+xpustat --prometheus         # Prometheus text format, once
+xpustat --serve-prometheus 9400   # serve http://0.0.0.0:9400/metrics (fresh query per scrape)
 xpustat --version
 ```
 
@@ -68,6 +86,7 @@ xpustat 0.1.0  ·  myhost  ·  Fri May 22  11:24:00  2026
 ──────────────────────────────────────────────────────────────────────────
 [NVIDIA] #0    Tesla V100                          │   1,024 / 32,768 MB   ███░░░░░░░░░░░░░    3%
 [AMD   ] #0    Radeon RX 7900 XTX                  │      26 / 24,560 MB   ░░░░░░░░░░░░░░░░    0%
+[APPLE ] #0    Apple M5                            │     375 / 32,768 MB   ░░░░░░░░░░░░░░░░    1%
 [HUAWEI] #0:0  Ascend 310                          │   2,703 /  8,192 MB   █████░░░░░░░░░░░   33%
 ```
 
@@ -102,7 +121,54 @@ from xpustat import NvidiaGPUStatCollection
 gpus = NvidiaGPUStatCollection.new_query()
 ```
 
+### Picking a device for training / inference
+
+Every device object carries vendor-neutral fields on top of the vendor ones:
+
+| Field | Meaning |
+|---|---|
+| `vendor` | vendor key, e.g. `"nvidia"` |
+| `device_index` | physical index as the vendor tool reports it |
+| `mem_free_mb` | free memory (for Apple unified memory: what the OS can still give the GPU) |
+| `framework_index` | index the ML framework will see after `CUDA_VISIBLE_DEVICES` / `HIP_VISIBLE_DEVICES` / `ASCEND_RT_VISIBLE_DEVICES` / … (`None` if hidden) |
+| `torch_device` | `torch.device` string: `cuda:N` (NVIDIA, AMD, Hygon), `mps`, `npu:N`, `hpu:N`, `xpu:N`, `mlu:N`, `musa:N`, `xla:N` |
+
+```python
+import xpustat
+
+dev = xpustat.pick_device()[0]            # most free memory first, honours *_VISIBLE_DEVICES
+model.to(dev.torch_device)                # "cuda:2", "npu:0", "mps", ...
+
+xpustat.pick_device(n=2, by="util")       # two least-busy devices
+xpustat.pick_device(vendor="amd", min_free_mb=8000)
+xpustat.visible_indices("nvidia")         # parsed CUDA_VISIBLE_DEVICES, or None when unset
+```
+
+### Prometheus / Grafana
+
+```bash
+xpustat --serve-prometheus 9400           # then scrape http://host:9400/metrics
+```
+
+Exposes `xpustat_memory_{used,total,free}_bytes`, `xpustat_utilization_percent`,
+`xpustat_temperature_celsius`, `xpustat_power_watts`, `xpustat_process_memory_bytes` and
+`xpustat_device_info` (with `arch` and `torch_device` labels) for every vendor from one process.
+`xpustat.to_prometheus(stats)` returns the same text for embedding in your own exporter.
+
 ## Version history
+
+### Unreleased
+- Apple Silicon GPU support (`apple` backend) read in-process from IOKit (~2 ms, `ioreg` fallback), no root required; tested on Apple M5
+- `-A` shows the GPU core count for Apple devices (e.g. `10-core`)
+- Fix: vendor collections now support index access (`stats.amd[0]`), as documented
+- Faster subprocess fallbacks: the `nvidia-smi` and `amd-smi` invocations now run concurrently
+- Watch mode no longer swallows errors silently
+- Fix: process lines now render as `user:command/pid` instead of running user and command together
+- The `nvidia` / `fast` extras now pull `nvidia-ml-py` (the official NVML bindings) instead of the deprecated `pynvml` package
+- New backends: AWS Neuron (`neuron-ls`), Google Cloud TPU (`tpu-info`), Tenstorrent (`tt-smi`)
+- Vendor-neutral device fields: `vendor`, `device_index`, `mem_free_mb`, `framework_index`, `torch_device`
+- `xpustat.pick_device()` picks the least-loaded device(s), honouring `*_VISIBLE_DEVICES`
+- Prometheus export: `--prometheus`, `--serve-prometheus PORT`, and `xpustat.to_prometheus()`
 
 ### 0.2.0
 - Fix AMD GPUs not being detected when `amd-smi` reports `"N/A"` sections or idle GPUs (e.g. ROCm 10 with an iGPU present)

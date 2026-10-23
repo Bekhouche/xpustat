@@ -15,8 +15,16 @@ def test_print_xpustat_snapshot(mock_render):
 @patch("time.sleep", return_value=None)
 @patch("time.monotonic", side_effect=[0, 1, 2, 3])
 def test_print_xpustat_watch_mode(mock_monotonic, mock_sleep, mock_render):
+    mock_render.return_value = ([], 0)   # _render returns (active_vendors, line_count)
     cli.print_xpustat(interval=1.0, count=2)
     assert mock_render.call_count == 2
+
+
+@patch("xpustat.cli._render", side_effect=RuntimeError("boom"))
+def test_print_xpustat_watch_mode_surfaces_errors(mock_render):
+    # errors inside the watch loop must not be swallowed silently
+    with pytest.raises(RuntimeError):
+        cli.print_xpustat(interval=1.0, count=1)
 
 def test_fields_extract():
     class DummyDev:
@@ -42,3 +50,30 @@ def test_fmt_cc():
 def test_fmt_gfx():
     assert cli._fmt_gfx("gfx1100") == "gfx1100"
     assert cli._fmt_gfx(None) is None
+
+
+def test_fmt_cores():
+    assert cli._fmt_cores(10) == "10-core"
+    assert cli._fmt_cores(None) is None
+
+
+def test_fields_apple():
+    from xpustat.apple import AppleGPUStat
+    dev = AppleGPUStat(gpu_index=0, name="Apple M5", mem_used_mb=375,
+                       mem_total_mb=32768, util_pct=15, gpu_cores=10)
+    idx, name, arch, used, tot, util, temp, pwr, procs = cli._fields("apple", dev)
+    assert idx == "0"
+    assert name == "Apple M5"
+    assert arch == "10-core"
+    assert (used, tot, util) == (375, 32768, 15)
+    assert temp is None and pwr is None
+    assert procs == []
+
+
+def test_proc_repr_separates_user_and_command():
+    from xpustat._process import ProcessInfo
+    p = ProcessInfo(pid=42, username="root", command="python", gpu_mem_mb=1024)
+    cli._USE_COLOR = False
+    assert cli._proc_repr(p, show_user=True, show_pid=True, show_cmd=True) == "root:python/42(1024M)"
+    assert cli._proc_repr(p, show_user=True, show_pid=False, show_cmd=False) == "root(1024M)"
+    assert cli._proc_repr(p, show_user=False, show_pid=True, show_cmd=True) == "python/42(1024M)"

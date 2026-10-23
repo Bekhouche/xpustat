@@ -10,6 +10,10 @@ Supported backends (silently skipped if the tool is not installed):
     - Hygon DCU       hy-smi
     - Cambricon MLU   cnmon
     - Moore Threads   mthreads-gmi
+    - Apple           IOKit / ioreg (macOS only)
+    - AWS Neuron      neuron-ls
+    - Google TPU      tpu-info
+    - Tenstorrent     tt-smi
 """
 
 from __future__ import annotations
@@ -18,10 +22,11 @@ import datetime
 import json
 import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Iterator, List, Union
+from typing import Any, Iterator, List, Optional, Union
 
 from . import __version__
 from .amd import AMDGPUStat, AMDGPUStatCollection
+from .apple import AppleGPUStat, AppleGPUStatCollection
 from .cambricon import CambriconMLUStat, CambriconMLUStatCollection
 from .gaudi import GaudiAIPStat, GaudiAIPStatCollection
 from .huawei import HuaweiNPUStat, HuaweiNPUStatCollection
@@ -29,11 +34,15 @@ from .hygon import HygonDCUStat, HygonDCUStatCollection
 from .intel_gpu import IntelGPUStat, IntelGPUStatCollection
 from .moorethreads import MooreThreadsGPUStat, MooreThreadsGPUStatCollection
 from .nvidia import NvidiaGPUStat, NvidiaGPUStatCollection
+from .neuron import NeuronDeviceStat, NeuronDeviceStatCollection
+from .tpu import TPUChipStat, TPUChipStatCollection
+from .tenstorrent import TenstorrentDeviceStat, TenstorrentDeviceStatCollection
 
 # Union of all per-device stat types — useful for type hints downstream
 AnyDeviceStat = Union[
     NvidiaGPUStat, AMDGPUStat, GaudiAIPStat, IntelGPUStat,
     HuaweiNPUStat, HygonDCUStat, CambriconMLUStat, MooreThreadsGPUStat,
+    AppleGPUStat, NeuronDeviceStat, TPUChipStat, TenstorrentDeviceStat,
 ]
 
 
@@ -78,6 +87,10 @@ class XPUStatCollection:
         hygon: HygonDCUStatCollection,
         cambricon: CambriconMLUStatCollection,
         moorethreads: MooreThreadsGPUStatCollection,
+        apple: AppleGPUStatCollection = None,
+        neuron: NeuronDeviceStatCollection = None,
+        tpu: TPUChipStatCollection = None,
+        tenstorrent: TenstorrentDeviceStatCollection = None,
     ) -> None:
         self.nvidia = nvidia
         self.amd = amd
@@ -87,6 +100,10 @@ class XPUStatCollection:
         self.hygon = hygon
         self.cambricon = cambricon
         self.moorethreads = moorethreads
+        self.apple = apple if apple is not None else AppleGPUStatCollection([])
+        self.neuron = neuron if neuron is not None else NeuronDeviceStatCollection([])
+        self.tpu = tpu if tpu is not None else TPUChipStatCollection([])
+        self.tenstorrent = tenstorrent if tenstorrent is not None else TenstorrentDeviceStatCollection([])
 
     # ------------------------------------------------------------------
     # Container protocol
@@ -103,6 +120,10 @@ class XPUStatCollection:
             + list(self.hygon)
             + list(self.cambricon)
             + list(self.moorethreads)
+            + list(self.apple)
+            + list(self.neuron)
+            + list(self.tpu)
+            + list(self.tenstorrent)
         )
 
     def __iter__(self) -> Iterator[AnyDeviceStat]:
@@ -121,7 +142,8 @@ class XPUStatCollection:
 
         Returns the vendor-specific collection object (iterable, has ``len()``).
 
-        Valid keys: nvidia, amd, gaudi, intel, huawei, hygon, cambricon, moorethreads
+        Valid keys: nvidia, amd, gaudi, intel, huawei, hygon, cambricon, moorethreads, apple,
+        neuron, tpu, tenstorrent
         """
         try:
             return getattr(self, vendor)
@@ -162,6 +184,10 @@ class XPUStatCollection:
             "hygon":        self.hygon.to_dict()["dcus"],
             "cambricon":    self.cambricon.to_dict()["mlus"],
             "moorethreads": self.moorethreads.to_dict()["gpus"],
+            "apple":        self.apple.to_dict()["gpus"],
+            "neuron":       self.neuron.to_dict()["devices"],
+            "tpu":          self.tpu.to_dict()["chips"],
+            "tenstorrent":  self.tenstorrent.to_dict()["devices"],
         }
 
     def to_json(self, indent: int = 2, metadata: bool = False) -> str:
@@ -208,6 +234,10 @@ _BACKENDS: List[tuple] = [
     ("hygon",        HygonDCUStatCollection),
     ("cambricon",    CambriconMLUStatCollection),
     ("moorethreads", MooreThreadsGPUStatCollection),
+    ("apple",        AppleGPUStatCollection),
+    ("neuron",       NeuronDeviceStatCollection),
+    ("tpu",          TPUChipStatCollection),
+    ("tenstorrent",  TenstorrentDeviceStatCollection),
 ]
 
 _BACKENDS_KEYS: List[str] = [name for name, _ in _BACKENDS]
@@ -273,6 +303,10 @@ def query_all(parallel: bool = True, vendors: Optional[List[str]] = None) -> XPU
         hygon=results["hygon"],
         cambricon=results["cambricon"],
         moorethreads=results["moorethreads"],
+        apple=results["apple"],
+        neuron=results["neuron"],
+        tpu=results["tpu"],
+        tenstorrent=results["tenstorrent"],
     )
 
 
@@ -282,7 +316,8 @@ def query(vendor: str):
 
     Args:
         vendor: One of: ``nvidia``, ``amd``, ``gaudi``, ``intel``,
-                ``huawei``, ``hygon``, ``cambricon``, ``moorethreads``.
+                ``huawei``, ``hygon``, ``cambricon``, ``moorethreads``, ``apple``,
+                ``neuron``, ``tpu``, ``tenstorrent``.
 
     Returns:
         The vendor-specific ``*StatCollection`` (iterable, has ``to_dict()``).

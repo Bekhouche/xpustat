@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
+from ._device import DeviceMixin
 from ._process import ProcessInfo, enrich_process
 
 # ---------------------------------------------------------------------------
@@ -16,8 +18,11 @@ except ImportError:
     _HAS_PYNVML = False
 
 
-class NvidiaGPUStat:
+class NvidiaGPUStat(DeviceMixin):
     """Stats for a single NVIDIA GPU."""
+
+    vendor = "nvidia"
+    _index_attr = "gpu_index"
 
     def __init__(
         self,
@@ -54,6 +59,7 @@ class NvidiaGPUStat:
             "cuda_cc": self.cuda_cc,
             "mem_used_mb": self.mem_used_mb,
             "mem_total_mb": self.mem_total_mb,
+            "mem_free_mb": self.mem_free_mb,
             "util_pct": self.util_pct,
             "temp_c": self.temp_c,
             "power_w": self.power_w,
@@ -93,6 +99,9 @@ class NvidiaGPUStatCollection:
 
     def __iter__(self):
         return iter(self.gpus)
+
+    def __getitem__(self, index):
+        return self.gpus[index]
 
     def __repr__(self) -> str:
         return f"NvidiaGPUStatCollection({self.gpus!r})"
@@ -241,11 +250,20 @@ class NvidiaGPUStatCollection:
         if shutil.which("nvidia-smi") is None:
             return cls([], backend="none")
 
-        gpu_out = cls._smi(
-            "--query-gpu=index,uuid,name,compute_cap,memory.used,memory.total,"
-            "utilization.gpu,temperature.gpu,power.draw,power.limit",
-            "--format=csv,noheader,nounits",
-        )
+        # Both nvidia-smi invocations are independent; run them concurrently.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_gpu = pool.submit(
+                cls._smi,
+                "--query-gpu=index,uuid,name,compute_cap,memory.used,memory.total,"
+                "utilization.gpu,temperature.gpu,power.draw,power.limit",
+                "--format=csv,noheader,nounits",
+            )
+            f_proc = pool.submit(
+                cls._smi,
+                "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory",
+                "--format=csv,noheader,nounits",
+            )
+        gpu_out = f_gpu.result()
         if gpu_out is None:
             return cls([], backend="none")
 
@@ -282,10 +300,7 @@ class NvidiaGPUStatCollection:
         if not gpus:
             return cls([], backend="none")
 
-        proc_out = cls._smi(
-            "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory",
-            "--format=csv,noheader,nounits",
-        )
+        proc_out = f_proc.result()
         if proc_out:
             gpu_by_idx = {g.gpu_index: g for g in gpus}
             for line in proc_out.strip().splitlines():

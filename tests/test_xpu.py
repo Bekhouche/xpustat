@@ -11,6 +11,7 @@ from xpustat.huawei import HuaweiNPUStatCollection
 from xpustat.hygon import HygonDCUStatCollection
 from xpustat.cambricon import CambriconMLUStatCollection
 from xpustat.moorethreads import MooreThreadsGPUStatCollection
+from xpustat.apple import AppleGPUStatCollection
 
 def create_mock_collection():
     return XPUStatCollection(
@@ -22,6 +23,7 @@ def create_mock_collection():
         hygon=HygonDCUStatCollection([]),
         cambricon=CambriconMLUStatCollection([]),
         moorethreads=MooreThreadsGPUStatCollection([]),
+        apple=AppleGPUStatCollection([]),
     )
 
 def test_xpustat_collection_empty():
@@ -43,6 +45,9 @@ def test_xpustat_collection_to_dict():
     assert "nvidia" in d
     assert "amd" in d
     assert "moorethreads" in d
+    assert "apple" in d
+    for k in ("neuron", "tpu", "tenstorrent"):
+        assert d[k] == []
     assert d["nvidia"] == []
 
 def test_xpustat_collection_to_json():

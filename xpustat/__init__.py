@@ -2,7 +2,8 @@
 xpustat — unified accelerator stat tool.
 
 Supports NVIDIA, AMD, Intel Gaudi, Intel Arc/GPU,
-Huawei Ascend, Hygon DCU, Cambricon MLU, and Moore Threads.
+Huawei Ascend, Hygon DCU, Cambricon MLU, Moore Threads, Apple Silicon,
+AWS Neuron, Google Cloud TPU, and Tenstorrent.
 
 Quick start::
 
@@ -31,10 +32,18 @@ Quick start::
 
     # JSON with metadata wrapper
     print(stats.to_json(metadata=True))
+
+    # Pick the least-loaded device and hand it to PyTorch
+    dev = xpustat.pick_device()[0]
+    model.to(dev.torch_device)            # e.g. "cuda:2", "npu:0", "mps"
+    print(dev.mem_free_mb, dev.framework_index)
+
+    # Prometheus text format
+    print(xpustat.to_prometheus(stats))
 """
 
 __version__ = "0.2.0"
-__version_tuple__ = (0, 1, 0)
+__version_tuple__ = tuple(int(x) for x in __version__.split("."))
 
 from ._process import ProcessInfo
 from .xpu import AnyDeviceStat, XPUStatCollection, query, query_all
@@ -46,6 +55,13 @@ from .huawei import HuaweiNPUStat, HuaweiNPUStatCollection
 from .hygon import HygonDCUStat, HygonDCUStatCollection
 from .cambricon import CambriconMLUStat, CambriconMLUStatCollection
 from .moorethreads import MooreThreadsGPUStat, MooreThreadsGPUStatCollection
+from .apple import AppleGPUStat, AppleGPUStatCollection
+from .neuron import NeuronDeviceStat, NeuronDeviceStatCollection
+from .tpu import TPUChipStat, TPUChipStatCollection
+from .tenstorrent import TenstorrentDeviceStat, TenstorrentDeviceStatCollection
+from ._device import (DeviceMixin, TORCH_DEVICE_TYPE, VISIBLE_DEVICES_ENV,
+                      pick_device, visible_indices, framework_index, torch_device)
+from .prometheus import to_prometheus
 
 __all__ = [
     "__version__",
@@ -74,4 +90,22 @@ __all__ = [
     "CambriconMLUStatCollection",
     "MooreThreadsGPUStat",
     "MooreThreadsGPUStatCollection",
+    "AppleGPUStat",
+    "AppleGPUStatCollection",
+    "NeuronDeviceStat",
+    "NeuronDeviceStatCollection",
+    "TPUChipStat",
+    "TPUChipStatCollection",
+    "TenstorrentDeviceStat",
+    "TenstorrentDeviceStatCollection",
+    # Device selection / framework helpers
+    "DeviceMixin",
+    "TORCH_DEVICE_TYPE",
+    "VISIBLE_DEVICES_ENV",
+    "pick_device",
+    "visible_indices",
+    "framework_index",
+    "torch_device",
+    # Prometheus
+    "to_prometheus",
 ]

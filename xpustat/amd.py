@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
+from ._device import DeviceMixin
 from ._process import ProcessInfo, enrich_process
 
 # ---------------------------------------------------------------------------
@@ -17,8 +19,11 @@ except ImportError:
     _HAS_AMDSMI = False
 
 
-class AMDGPUStat:
+class AMDGPUStat(DeviceMixin):
     """Stats for a single AMD GPU."""
+
+    vendor = "amd"
+    _index_attr = "gpu_index"
 
     def __init__(
         self,
@@ -50,6 +55,7 @@ class AMDGPUStat:
             "gfx_target": self.gfx_target,
             "mem_used_mb": self.mem_used_mb,
             "mem_total_mb": self.mem_total_mb,
+            "mem_free_mb": self.mem_free_mb,
             "util_pct": self.util_pct,
             "temp_c": self.temp_c,
             "power_w": self.power_w,
@@ -88,6 +94,9 @@ class AMDGPUStatCollection:
 
     def __iter__(self):
         return iter(self.gpus)
+
+    def __getitem__(self, index):
+        return self.gpus[index]
 
     def __repr__(self) -> str:
         return f"AMDGPUStatCollection({self.gpus!r})"
@@ -251,9 +260,15 @@ class AMDGPUStatCollection:
         if shutil.which("amd-smi") is None:
             return cls([], backend="none")
 
-        static_data = cls._run_amd_smi(["static"])
-        metric_data = cls._run_amd_smi(["metric"])
-        process_data = cls._run_amd_smi(["process"])
+        # The three amd-smi invocations are independent; run them concurrently
+        # (each can take several hundred ms on ROCm).
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_static  = pool.submit(cls._run_amd_smi, ["static"])
+            f_metric  = pool.submit(cls._run_amd_smi, ["metric"])
+            f_process = pool.submit(cls._run_amd_smi, ["process"])
+        static_data  = f_static.result()
+        metric_data  = f_metric.result()
+        process_data = f_process.result()
 
         if static_data is None or metric_data is None:
             return cls([], backend="none")

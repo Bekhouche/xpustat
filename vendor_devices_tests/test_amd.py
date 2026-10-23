@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
+import os
 import sys
 import json
-from xpustat import query
+
+# Allow running straight from a git checkout without installing xpustat.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from xpustat import query  # noqa: E402
 
 def main():
     vendor = "amd"

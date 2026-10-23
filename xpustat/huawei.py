@@ -5,10 +5,15 @@ import re
 import shutil
 import subprocess
 from typing import Dict, List, Optional
+from ._device import DeviceMixin
 
 
-class HuaweiNPUStat:
+class HuaweiNPUStat(DeviceMixin):
     """Stats for a single Huawei Ascend NPU chip."""
+
+    vendor = "huawei"
+    _index_attr = "npu_id"
+    _sub_index_attr = "chip_id"
 
     def __init__(
         self,
@@ -41,6 +46,7 @@ class HuaweiNPUStat:
             "name": self.name,
             "mem_used_mb": self.mem_used_mb,
             "mem_total_mb": self.mem_total_mb,
+            "mem_free_mb": self.mem_free_mb,
             "health": self.health,
             "temp_c": self.temp_c,
             "power_w": self.power_w,
@@ -75,6 +81,9 @@ class HuaweiNPUStatCollection:
 
     def __iter__(self):
         return iter(self.npus)
+
+    def __getitem__(self, index):
+        return self.npus[index]
 
     def __repr__(self) -> str:
         return f"HuaweiNPUStatCollection({self.npus!r})"

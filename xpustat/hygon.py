@@ -3,10 +3,14 @@ import re
 import shutil
 import subprocess
 from typing import Optional
+from ._device import DeviceMixin
 
 
-class HygonDCUStat:
+class HygonDCUStat(DeviceMixin):
     """Parse DCU info from hy-smi for a single Hygon Deep Computing Unit."""
+
+    vendor = "hygon"
+    _index_attr = "card_index"
 
     def __init__(self, card_index: int, name: str, mem_used_mb: int, mem_total_mb: int):
         self.card_index = card_index
@@ -20,6 +24,7 @@ class HygonDCUStat:
             "name": self.name,
             "mem_used_mb": self.mem_used_mb,
             "mem_total_mb": self.mem_total_mb,
+            "mem_free_mb": self.mem_free_mb,
         }
 
     def __repr__(self) -> str:
@@ -58,6 +63,9 @@ class HygonDCUStatCollection:
 
     def __iter__(self):
         return iter(self.dcus)
+
+    def __getitem__(self, index):
+        return self.dcus[index]
 
     def __repr__(self) -> str:
         return f"HygonDCUStatCollection({self.dcus!r})"

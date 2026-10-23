@@ -1,10 +1,14 @@
 import re
 import shutil
 import subprocess
+from ._device import DeviceMixin
 
 
-class MooreThreadsGPUStat:
+class MooreThreadsGPUStat(DeviceMixin):
     """Parse GPU info from mthreads-gmi for a single Moore Threads MTT GPU."""
+
+    vendor = "moorethreads"
+    _index_attr = "gpu_id"
 
     def __init__(self, gpu_id: int, name: str, mem_used_mb: int, mem_total_mb: int):
         self.gpu_id = gpu_id
@@ -18,6 +22,7 @@ class MooreThreadsGPUStat:
             "name": self.name,
             "mem_used_mb": self.mem_used_mb,
             "mem_total_mb": self.mem_total_mb,
+            "mem_free_mb": self.mem_free_mb,
         }
 
     def __repr__(self) -> str:
@@ -49,6 +54,9 @@ class MooreThreadsGPUStatCollection:
 
     def __iter__(self):
         return iter(self.gpus)
+
+    def __getitem__(self, index):
+        return self.gpus[index]
 
     def __repr__(self) -> str:
         return f"MooreThreadsGPUStatCollection({self.gpus!r})"

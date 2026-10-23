@@ -1,10 +1,15 @@
 import re
 import shutil
 import subprocess
+from ._device import DeviceMixin
 
 
-class CambriconMLUStat:
+class CambriconMLUStat(DeviceMixin):
     """Parse MLU info from cnmon for a single Cambricon MLU accelerator."""
+
+    vendor = "cambricon"
+    _index_attr = "card_id"
+    _sub_index_attr = "chip_id"
 
     def __init__(self, card_id: int, chip_id: int, name: str, mem_used_mb: int, mem_total_mb: int):
         self.card_id = card_id
@@ -20,6 +25,7 @@ class CambriconMLUStat:
             "name": self.name,
             "mem_used_mb": self.mem_used_mb,
             "mem_total_mb": self.mem_total_mb,
+            "mem_free_mb": self.mem_free_mb,
         }
 
     def __repr__(self) -> str:
@@ -52,6 +58,9 @@ class CambriconMLUStatCollection:
 
     def __iter__(self):
         return iter(self.mlus)
+
+    def __getitem__(self, index):
+        return self.mlus[index]
 
     def __repr__(self) -> str:
         return f"CambriconMLUStatCollection({self.mlus!r})"
