@@ -205,7 +205,7 @@ class XPUStatCollection:
             {
               "hostname": "myserver",
               "query_time": "2026-05-22T14:48:00.123456",
-              "xpustat_version": "0.2.0",
+              "xpustat_version": "0.3.0",
               "devices": { "nvidia": [...], "amd": [...], ... }
             }
         """

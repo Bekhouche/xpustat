@@ -42,7 +42,7 @@ Quick start::
     print(xpustat.to_prometheus(stats))
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __version_tuple__ = tuple(int(x) for x in __version__.split("."))
 
 from ._process import ProcessInfo

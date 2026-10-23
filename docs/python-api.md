@@ -130,7 +130,7 @@ The index attribute is the first entry of each row. These are the keys of `to_di
 }
 ```
 
-The example is assembled from a query on a host with L4 GPUs; the numbers are illustrative. `mem_free_mb` was added in the release after 0.2.0; the other keys are unchanged from 0.2.0.
+The example is assembled from a query on a host with L4 GPUs; the numbers are illustrative. `mem_free_mb` was added in 0.3.0; the other keys are unchanged from 0.2.0.
 
 ## Other exports
 

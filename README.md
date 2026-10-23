@@ -157,7 +157,7 @@ Exposes `xpustat_memory_{used,total,free}_bytes`, `xpustat_utilization_percent`,
 
 ## Version history
 
-### Unreleased
+### 0.3.0
 - Apple Silicon GPU support (`apple` backend) read in-process from IOKit (~2 ms, `ioreg` fallback), no root required; tested on Apple M5
 - `-A` shows the GPU core count for Apple devices (e.g. `10-core`)
 - Fix: vendor collections now support index access (`stats.amd[0]`), as documented
