@@ -78,3 +78,6 @@ Thumbs.db
 # Project specific
 publish_commands.txt
 *.zip
+
+# Local-only material (credentials, publish commands); never committed
+private/
