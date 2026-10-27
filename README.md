@@ -164,7 +164,7 @@ Exposes `xpustat_memory_{used,total,free}_bytes`, `xpustat_utilization_percent`,
 
 ## Version history
 
-### Unreleased
+### 0.4.0
 - NVIDIA Jetson backend (`jetson`) via `tegrastats`; MIG instances on the NVML path (`gpu.mig_instances`)
 - `xpustat --select N` prints the vendor's visible-devices assignment; `visible_devices_env()` is the library form
 - `TPU_VISIBLE_CHIPS`, `TT_VISIBLE_DEVICES` and `NEURON_RT_VISIBLE_CORES` (core ranges) are honoured
