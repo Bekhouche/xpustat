@@ -727,6 +727,10 @@ def test_apple_sensors_on_this_mac():
     from xpustat import _apple_sensors as sens
     watts = sens.energy_watts()
     temps = sens.temperatures()
+    if not watts or not temps:
+        # hosted macOS runners are virtual machines without the IOReport energy
+        # model or SMC temperature keys; the readers return {} there by design
+        pytest.skip("no Apple sensors on this Mac (virtual machine?)")
     assert "gpu" in watts and "cpu" in watts and all(v >= 0 for v in watts.values())
     assert temps.get("gpu") and 10 < temps["gpu"] < 120 and temps.get("cpu") and 10 < temps["cpu"] < 120
     col = AppleGPUStatCollection.new_query()
