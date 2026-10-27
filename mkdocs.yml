@@ -10,6 +10,7 @@ nav:
   - Python API: python-api.md
   - Device selection: device-selection.md
   - Prometheus: prometheus.md
+  - Web UI: web-ui.md
   - Backends: backends.md
   - Contributing: contributing.md
 

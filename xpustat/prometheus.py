@@ -93,9 +93,15 @@ _METRICS: List[Tuple[str, str, str]] = [
 
 
 def _opt(samples: Dict[str, List[str]], name: str, lbl: str, value: Any) -> None:
-    """Append a sample when *value* is known; bools become 0/1."""
+    """Append a sample when *value* is known and numeric; bools become 0/1, ``"P2"`` becomes 2."""
     if value is None:
         return
+    if isinstance(value, str):
+        text = value.strip().lstrip("Pp")
+        try:
+            value = int(text) if text.lstrip("-").isdigit() else float(text)
+        except ValueError:
+            return  # a plugin's textual state; not a metric
     samples[name].append(f"{name}{lbl} {_fmt(value)}")
 
 

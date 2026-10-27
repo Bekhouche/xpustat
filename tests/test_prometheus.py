@@ -130,3 +130,11 @@ def test_http_server_json_endpoint():
             assert "hostname" in data and data["devices"]["nvidia"][0]["name"].startswith("L4")
     finally:
         server.shutdown(); server.server_close()
+
+
+def test_opt_tolerates_textual_values():
+    samples = {"m": []}
+    prom._opt(samples, "m", "{}", "P2")
+    prom._opt(samples, "m", "{}", "auto")   # AMD perf_level style: skipped, no crash
+    prom._opt(samples, "m", "{}", True)
+    assert samples["m"] == ["m{} 2", "m{} 1"]

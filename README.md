@@ -87,6 +87,8 @@ export $(xpustat --select 2) # restrict a job to the 2 freest devices (CUDA_VISI
 xpustat --doctor             # why is a vendor missing? tools, bindings, env vars, errors
 xpustat --hosts http://n1:9400 http://n2:9400   # cluster view over the exporters' /json
 xpustat --ssh n1 n2 -a       # agentless cluster view over ssh
+xpustat --ui                 # browser page at http://127.0.0.1:9400/ (plus /json and /metrics)
+xpustat --ui --ssh n1 n2 --cpu -i 5 --port 8080   # one page for the whole cluster, polled over ssh
 xpustat --record run.ndjson.gz -i 1 -n 60; xpustat --replay run.ndjson.gz -i 0.2
 xpustat --prometheus         # Prometheus text format, once
 xpustat --serve-prometheus 9400   # serve http://0.0.0.0:9400/metrics (fresh query per scrape)
@@ -176,11 +178,26 @@ Exposes `xpustat_memory_{used,total,free}_bytes`, `xpustat_utilization_percent`,
 `xpustat_device_info` (with `arch` and `torch_device` labels) for every vendor from one process.
 `xpustat.to_prometheus(stats)` returns the same text for embedding in your own exporter.
 
+### Web UI
+
+```bash
+xpustat --ui --cpu                        # this machine, http://127.0.0.1:9400/
+xpustat --ui --ssh node1 node2 node3 -i 5  # every node on one page, polled over ssh
+xpustat --ui --hosts-file lab.txt          # host list from a file
+```
+
+One self-contained page, nothing loaded from the network: every `-a` column, health badges, processes with container or job on click, MIG instances, the CPU row, sparklines for the open tab, host and vendor filters, a compact mode, and a summary bar across hosts (free devices, memory, hottest, throttled). Dead hosts keep their last snapshot and are marked. The server polls the hosts itself, so many browser tabs cost one ssh fan-out. Binds to localhost unless `--host 0.0.0.0`.
+
 ## Acknowledgements
 
 Hichem Telli tested some devices and reported the results.
 
 ## Version history
+
+### Unreleased
+- Web UI: `xpustat --ui` serves a browser page (plus `/json`, `/metrics` and `/cluster`) for this machine or for many hosts with `--ssh`, `--hosts` or `--hosts-file`; `--port`, `--host`, `--no-local`; the server polls the hosts on its own timer and keeps the last snapshot of hosts that stop answering
+- Continuous integration: GitHub Actions runs the tests on Ubuntu, macOS and Windows with Python 3.9 and 3.13, builds the sdist and wheel and the docs on every push
+- Prometheus: a textual P-state such as `P2` is exported as 2 and other textual states are skipped instead of raising
 
 ### 0.5.0
 - Host CPU and memory as an opt-in device: `xpustat --cpu`, `query_all(include_cpu=True)`, `stats.cpu`; the `cpu` JSON key appears only when asked, so existing output is unchanged

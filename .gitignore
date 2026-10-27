@@ -84,3 +84,6 @@ private/
 
 # Local planning notes
 TODO.md
+
+# mkdocs output
+site/

@@ -663,6 +663,33 @@ def _run_remote(args, include_cpu: bool) -> None:
             os.system("cls" if os.name == "nt" else "clear")
 
 
+def _run_ui(args, include_cpu: bool) -> None:
+    """``--ui``: the browser page, local or across --hosts / --ssh / --hosts-file."""
+    from .ui import ClusterCollector, read_hosts_file, serve_ui, split_hosts
+    urls = list(args.hosts or [])
+    ssh = list(args.ssh or [])
+    if args.hosts_file:
+        try:
+            more_urls, more_ssh = split_hosts(read_hosts_file(args.hosts_file))
+        except OSError as exc:
+            sys.stderr.write(f"xpustat: cannot read {args.hosts_file}: {exc}\n")
+            sys.exit(1)
+        urls += [u for u in more_urls if u not in urls]
+        ssh += [h for h in more_ssh if h not in ssh]
+    interval = args.interval if args.interval and args.interval > 0 else None
+    cluster = None
+    if urls or ssh:
+        cluster = ClusterCollector(urls=urls, ssh=ssh, command=args.ssh_command, include_cpu=include_cpu,
+                                   interval=interval or 5.0, timeout=args.timeout,
+                                   local=None if args.no_local else True)  # type: ignore[arg-type]
+    try:
+        serve_ui(port=args.port, host=args.host or "127.0.0.1", max_age=max(args.cache_ttl, 0.0),
+                 include_cpu=include_cpu, cluster=cluster, interval=interval or 2.0)
+    except OSError as exc:
+        sys.stderr.write(f"xpustat: cannot bind {args.host or '127.0.0.1'}:{args.port}: {exc}\n")
+        sys.exit(1)
+
+
 def _open_record(path: str, mode: str):
     import gzip
     return gzip.open(path, mode + "t", encoding="utf-8") if path.endswith(".gz") else open(path, mode, encoding="utf-8")
@@ -827,6 +854,8 @@ def main() -> None:
             "  xpustat --ssh n1 n2 -a       # agentless cluster view over ssh\n"
             "  xpustat --record run.ndjson.gz -i 1 -n 60; xpustat --replay run.ndjson.gz -i 0.2\n"
             "  xpustat --prometheus         # Prometheus text format, once\n"
+            "  xpustat --ui                 # browser page at http://127.0.0.1:9400/\n"
+            "  xpustat --ui --ssh n1 n2 --cpu -i 5 --port 8080   # one page for the whole cluster\n"
             "  xpustat --serve-prometheus 9400   # /metrics endpoint for Prometheus\n"
         ),
     )
@@ -906,10 +935,21 @@ def main() -> None:
                      help="Skip devices with less than MB free (with --select).")
     sel.add_argument("--uuid", action="store_true",
                      help="Emit UUIDs instead of indices where the vendor has them (with --select).")
-    parser.add_argument("--serve-prometheus", metavar="PORT", type=int, default=None,
-                        help="Serve Prometheus metrics at http://0.0.0.0:PORT/metrics (fresh query per scrape).")
-    parser.add_argument("--cache-ttl", metavar="SECS", type=float, default=0.0,
-                        help="With --serve-prometheus: reuse a result up to SECS old between scrapes.")
+    srv = parser.add_argument_group("web UI and exporter")
+    srv.add_argument("--ui", action="store_true",
+                     help="Serve a browser page at http://HOST:PORT/ showing every device (plus /json, /metrics, "
+                          "/cluster); add --hosts, --ssh or --hosts-file for a multi-host page.")
+    srv.add_argument("--port", metavar="PORT", type=int, default=9400, help="Port for --ui (default 9400).")
+    srv.add_argument("--host", metavar="ADDR", default=None,
+                     help="Bind address: 127.0.0.1 for --ui, 0.0.0.0 for --serve-prometheus by default.")
+    srv.add_argument("--hosts-file", metavar="FILE", default=None,
+                     help="Read hosts for --ui from FILE, one per line: exporter URLs or ssh hosts; # comments.")
+    srv.add_argument("--no-local", action="store_true",
+                     help="With --ui and remote hosts: leave this machine out of the page.")
+    srv.add_argument("--serve-prometheus", metavar="PORT", type=int, default=None,
+                     help="Serve Prometheus metrics at http://0.0.0.0:PORT/metrics (fresh query per scrape).")
+    srv.add_argument("--cache-ttl", metavar="SECS", type=float, default=0.0,
+                     help="With --ui or --serve-prometheus: reuse a local result up to SECS old between requests.")
     parser.add_argument("--version", action="version",   version=f"xpustat {__version__}")
 
     args = parser.parse_args()
@@ -917,6 +957,10 @@ def main() -> None:
 
     if args.print_completion:
         print(_completion_script(parser, args.print_completion))
+        return
+
+    if args.ui:
+        _run_ui(args, include_cpu)
         return
 
     if args.hosts or args.ssh:
@@ -972,7 +1016,8 @@ def main() -> None:
 
     if args.serve_prometheus is not None:
         from .prometheus import serve
-        serve(port=args.serve_prometheus, max_age=max(args.cache_ttl, 0.0), include_cpu=include_cpu)
+        serve(port=args.serve_prometheus, host=args.host or "0.0.0.0", max_age=max(args.cache_ttl, 0.0),
+              include_cpu=include_cpu)
         return
 
     if args.json:

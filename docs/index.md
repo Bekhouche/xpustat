@@ -2,7 +2,7 @@
 
 xpustat is a command-line tool and Python library that reports the state of every AI accelerator on a machine, whatever the vendor. It is the equivalent of `gpustat` for NVIDIA, AMD, Intel, Huawei, Hygon, Cambricon, Moore Threads, Apple Silicon, AWS Neuron, Google Cloud TPU and Tenstorrent devices, with one output format and one Python API.
 
-It is used for checking which devices are free before launching a job, watching memory and utilization during training, picking a device from a script, exporting metrics to Prometheus, and writing vendor-neutral tooling on top of the Python API, to cite a few.
+It is used for checking which devices are free before launching a job, watching memory and utilization during training, picking a device from a script, exporting metrics to Prometheus, watching a whole cluster in a browser, and writing vendor-neutral tooling on top of the Python API, to cite a few.
 
 ## How it works
 
@@ -21,6 +21,7 @@ Each query runs in three stages:
 | [Python API](python-api.md) | `query_all`, collections, per-vendor fields, JSON schema |
 | [Device selection](device-selection.md) | `pick_device`, `*_VISIBLE_DEVICES`, `torch_device` |
 | [Prometheus](prometheus.md) | the exporter, the metrics, a scrape configuration |
+| [Web UI](web-ui.md) | `--ui`: the browser page for one machine or a cluster over ssh |
 | [Backends](backends.md) | one section per vendor: command used, fields, limits, test status |
 | [Contributing](contributing.md) | adding a backend, running the tests, hardware test scripts |
 

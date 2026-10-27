@@ -5,6 +5,7 @@ xpustat [-h] [-u] [-p] [-c] [-a] [-e] [-t] [-P] [-A] [-i [INTERVAL]] [-n N]
         [-f VENDOR [VENDOR ...]] [--no-header] [--no-color]
         [-F] [-C] [-E] [-H] [-k] [--full-cmd] [--id IDS] [--print-completion SHELL]
         [--cpu] [--json] [--prometheus] [--select N] [--by RANKING] [--min-free MB] [--uuid]
+        [--ui] [--port PORT] [--host ADDR] [--hosts-file FILE] [--no-local]
         [--serve-prometheus PORT] [--cache-ttl SECS] [--doctor]
         [--hosts URL ...] [--ssh HOST ...] [--ssh-command CMD] [--timeout SECS]
         [--record FILE] [--replay FILE] [--version]
@@ -77,8 +78,11 @@ On a terminal, watch mode draws on the alternate screen and redraws each frame i
 |---|---|
 | `--json` | the `to_dict()` structure as JSON, see [Python API](python-api.md#json-output); cannot be combined with `-i` |
 | `--prometheus` | the Prometheus text format, once |
+| `--ui` | serve the browser page at `http://127.0.0.1:9400/` until interrupted, see [Web UI](web-ui.md); `/json` and `/metrics` too |
+| `--port PORT` | port for `--ui` (default 9400) |
+| `--host ADDR` | bind address: `127.0.0.1` for `--ui`, `0.0.0.0` for `--serve-prometheus` by default |
 | `--serve-prometheus PORT` | serve `/metrics` on `0.0.0.0:PORT` until interrupted, see [Prometheus](prometheus.md) |
-| `--cache-ttl SECS` | with `--serve-prometheus`: reuse a result up to SECS old between scrapes |
+| `--cache-ttl SECS` | with `--ui` or `--serve-prometheus`: reuse a local result up to SECS old between requests |
 | `--print-completion SHELL` | print a completion script for `bash`, `zsh` or `fish`: `eval "$(xpustat --print-completion bash)"` |
 | `--version` | print the version |
 
@@ -121,6 +125,8 @@ xpustat --ssh node3 --ssh-command 'cd ~/xpustat && PYTHONPATH=. python3 -m xpust
 
 The table gets a host column; a host that does not answer shows `unreachable: <reason>` and the others still render. `--json` prints one object per host with `host`, `hostname`, `query_time`, `error` and `devices`; `-i` refreshes.
 
+Add `--ui` to get the same hosts as a browser page instead of a table; `--hosts-file FILE` reads the host list from a file and `--no-local` leaves this machine out. See [Web UI](web-ui.md).
+
 ### Record and replay
 
 ```bash
@@ -143,6 +149,7 @@ xpustat -f nvidia amd        # only NVIDIA and AMD
 xpustat -A                   # architecture column
 xpustat --json | jq '.nvidia[].mem_free_mb'
 export $(xpustat --select 2)
+xpustat --ui --ssh node1 node2 --cpu -i 5   # browser page for the cluster
 xpustat --serve-prometheus 9400
 ```
 

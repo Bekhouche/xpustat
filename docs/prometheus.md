@@ -10,7 +10,7 @@ xpustat --serve-prometheus 9400
 
 This serves `http://0.0.0.0:9400/metrics` until interrupted. Every scrape runs a fresh `query_all()` unless `--cache-ttl SECS` is given, in which case a result up to that old is reused, so the values are as current as the vendor tools allow; on the machines used for testing a query takes between 4 ms (Apple, in-process) and 170 ms (AMD or NVIDIA through the vendor command). A vendor query that raises produces an HTTP 500 with the error in the body, and the server stays up.
 
-Port 9400 is the dcgm-exporter convention; any port works. `/json` returns `to_json(metadata=True)`, which `xpustat --hosts` reads for the cluster view. Any other path returns 404.
+Port 9400 is the dcgm-exporter convention; any port works, and `--host ADDR` changes the bind address. `/json` returns `to_json(metadata=True)`, which `xpustat --hosts` reads for the cluster view. Any other path returns 404. `xpustat --ui` serves the same `/metrics` and `/json` plus the [browser page](web-ui.md), so a node needs only one of the two.
 
 ```bash
 xpustat --prometheus          # print the same text once and exit
