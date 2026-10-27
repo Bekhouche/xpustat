@@ -8,7 +8,7 @@ xpustat can act as a Prometheus exporter for every vendor from one process, whic
 xpustat --serve-prometheus 9400
 ```
 
-This serves `http://0.0.0.0:9400/metrics` until interrupted. Every scrape runs a fresh `query_all()`, so the values are as current as the vendor tools allow; on the machines used for testing a query takes between 4 ms (Apple, in-process) and 170 ms (AMD or NVIDIA through the vendor command). A vendor query that raises produces an HTTP 500 with the error in the body, and the server stays up.
+This serves `http://0.0.0.0:9400/metrics` until interrupted. Every scrape runs a fresh `query_all()` unless `--cache-ttl SECS` is given, in which case a result up to that old is reused, so the values are as current as the vendor tools allow; on the machines used for testing a query takes between 4 ms (Apple, in-process) and 170 ms (AMD or NVIDIA through the vendor command). A vendor query that raises produces an HTTP 500 with the error in the body, and the server stays up.
 
 Port 9400 is the dcgm-exporter convention; any port works. Any path other than `/metrics` and `/` returns 404.
 
@@ -39,7 +39,7 @@ scrape_configs:
 
 ## Metrics
 
-All metrics are gauges. The device labels are `vendor`, `index` and `name`; `index` is the display index, `0:1` for vendors addressed as card:chip.
+All metrics are gauges. The device labels are `vendor`, `index` and `name`; `index` is the display index, `0:1` for vendors addressed as card:chip. MIG instances are exported as devices of their own with `index` of the form `parent/gi.ci` and their `MIG-` UUID in `xpustat_device_info`; `xpustat_scrape_devices` counts parent GPUs only.
 
 | Metric | Labels | Meaning |
 |---|---|---|
@@ -73,6 +73,6 @@ A per-device memory panel is `xpustat_memory_used_bytes / xpustat_memory_total_b
 
 ## Limitations
 
-- The exporter is a snapshot per scrape. There is no caching, so a very short `scrape_interval` on a host where the vendor command is slow adds that much load to the vendor tool.
+- The exporter is a snapshot per scrape unless `--cache-ttl` is set, so a very short `scrape_interval` on a host where the vendor command is slow adds that much load to the vendor tool.
 - There is no TLS and no authentication. Put the port behind a reverse proxy or a firewall rule if the host is reachable from outside the monitoring network.
 - The `name` label is the vendor's device string and can contain spaces; it is escaped per the exposition format.

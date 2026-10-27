@@ -10,9 +10,9 @@ for dev in stats:
 
 ## Querying
 
-### `query_all(parallel=True, vendors=None)`
+### `query_all(parallel=True, vendors=None, max_age=None)`
 
-Queries every backend and returns an `XPUStatCollection`. With `parallel=True` the backends run in a thread pool; `parallel=False` runs them one after another, which is easier to debug. `vendors` restricts the query to a list of vendor keys; the other vendors come back empty.
+Queries every backend and returns an `XPUStatCollection`. With `parallel=True` the backends run in a thread pool; `parallel=False` runs them one after another, which is easier to debug. `vendors` restricts the query to a list of vendor keys; the other vendors come back empty. `max_age` returns the previous result when it is at most that many seconds old and was made with the same `vendors`; it is meant for exporters and loops that poll faster than the vendor tools answer.
 
 A backend whose tool is missing, or whose query raises, contributes an empty collection. `query_all` itself does not raise for vendor problems.
 
@@ -36,7 +36,7 @@ The same, called on the class directly: `xpustat.AppleGPUStatCollection.new_quer
 | `stats.to_dict()` | JSON-ready dict keyed by vendor |
 | `stats.to_json(indent=2, metadata=False)` | the dict as a string; with `metadata=True` it is wrapped with `hostname`, `query_time` and `xpustat_version` |
 
-The constructor takes the eight original vendor collections as positional arguments and the four added later (`apple`, `neuron`, `tpu`, `tenstorrent`) as keyword arguments that default to empty, so code that built a collection by hand for version 0.2 keeps working.
+The constructor takes the eight original vendor collections as positional arguments and those added later (`apple`, `neuron`, `tpu`, `tenstorrent`, `jetson`, and any registered plugin) as keyword arguments that default to empty, so code that built a collection by hand for version 0.2 keeps working.
 
 ## Per-vendor collections
 
@@ -60,6 +60,8 @@ Every device object has these, whatever the vendor. They are provided by `Device
 | `processes` | `list[ProcessInfo]` | processes using the device; empty when the vendor tool does not report them |
 | `framework_index` | `int` or `None` | the index the ML framework will see after `*_VISIBLE_DEVICES`; `None` when hidden |
 | `torch_device` | `str` or `None` | `torch.device` string, e.g. `"cuda:1"`; `None` when the vendor has no PyTorch backend or the device is hidden |
+| `ray_resource` | `str` or `None` | Ray resource name, e.g. `"GPU"`, `"NPU"`, `"neuron_cores"` |
+| `k8s_resource` | `str` or `None` | Kubernetes extended-resource name, e.g. `"nvidia.com/gpu"`; `None` where unconfirmed |
 | `to_dict()` | `dict` | JSON-ready representation |
 
 `util_pct`, `temp_c` and `power_w` are present on most vendors but not all; read them with `getattr(dev, "util_pct", None)` in vendor-neutral code. Huawei names its utilization `ai_core_pct`.
@@ -79,7 +81,8 @@ The index attribute is the first entry of each row. These are the keys of `to_di
 
 | Vendor | Class | Fields |
 |---|---|---|
-| nvidia | `NvidiaGPUStat` | `gpu_index`, `uuid`, `cuda_cc`, `util_pct`, `temp_c`, `power_w`, `power_limit_w` |
+| nvidia | `NvidiaGPUStat` | `gpu_index`, `uuid`, `cuda_cc`, `util_pct`, `temp_c`, `power_w`, `power_limit_w`, `mig_instances` (list of `MIGInstanceStat`: `parent_index`, `uuid`, `gpu_instance_id`, `compute_instance_id`, `profile`, memory, processes; NVML path only) |
+| jetson | `JetsonGPUStat` | `gpu_index`, `util_pct`, `temp_c`, `power_w`, `power_rail`, `unified_memory` (always true: RAM is shared with the CPU) |
 | amd | `AMDGPUStat` | `gpu_index`, `gfx_target`, `util_pct`, `temp_c`, `power_w` |
 | gaudi | `GaudiAIPStat` | `aip_index` |
 | intel | `IntelGPUStat` | `device_id` |
@@ -88,7 +91,7 @@ The index attribute is the first entry of each row. These are the keys of `to_di
 | cambricon | `CambriconMLUStat` | `card_id`, `chip_id` |
 | moorethreads | `MooreThreadsGPUStat` | `gpu_id` |
 | apple | `AppleGPUStat` | `gpu_index`, `gpu_cores`, `unified_memory`, `util_pct`; `temp_c` and `power_w` are always `None` |
-| neuron | `NeuronDeviceStat` | `neuron_device`, `nc_count`, `bdf`; `util_pct` is always `None`, `mem_used_mb` is always 0 |
+| neuron | `NeuronDeviceStat` | `neuron_device`, `nc_count`, `neuroncore_ids`, `bdf`; `util_pct` is always `None`, `mem_used_mb` is always 0 |
 | tpu | `TPUChipStat` | `device_id`, `device_path`, `util_pct` (TensorCore duty cycle), `hbm_bw_util_pct` |
 | tenstorrent | `TenstorrentDeviceStat` | `tt_device`, `bus_id`, `board_id`, `temp_c`, `power_w`, `board_power_w`, `aiclk_mhz`; memory fields are always 0 |
 
@@ -136,6 +139,7 @@ The example is assembled from a query on a host with L4 GPUs; the numbers are il
 
 | Name | Page |
 |---|---|
-| `pick_device`, `visible_indices`, `framework_index`, `torch_device`, `TORCH_DEVICE_TYPE`, `VISIBLE_DEVICES_ENV` | [Device selection](device-selection.md) |
+| `pick_device`, `visible_devices_env`, `visible_indices`, `framework_index`, `torch_device`, `TORCH_DEVICE_TYPE`, `VISIBLE_DEVICES_ENV`, `RAY_RESOURCE`, `K8S_RESOURCE` | [Device selection](device-selection.md) |
+| `register_backend`, `unregister_backend`, `DeviceMixin` | [Contributing](contributing.md#plugin-backends) |
 | `to_prometheus`, `xpustat.prometheus.serve` | [Prometheus](prometheus.md) |
 | `__version__` | the version string |

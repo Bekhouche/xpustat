@@ -1,7 +1,7 @@
 import pytest
 
 from xpustat import pick_device, torch_device, framework_index, visible_indices, XPUStatCollection
-from xpustat._device import DeviceMixin
+from xpustat._device import DeviceMixin, VISIBLE_DEVICES_ENV
 from xpustat.nvidia import NvidiaGPUStat, NvidiaGPUStatCollection
 from xpustat.amd import AMDGPUStat, AMDGPUStatCollection
 from xpustat.huawei import HuaweiNPUStat, HuaweiNPUStatCollection
@@ -154,3 +154,59 @@ def test_pick_device_respects_visible_devices():
 def test_pick_device_rejects_unknown_ranking():
     with pytest.raises(ValueError):
         pick_device(by="nope", stats=_stats())
+
+
+# ---------------------------------------------------------------------------
+# 0.4.0: ranges, sub-unit variables, env string, resource names
+# ---------------------------------------------------------------------------
+
+from xpustat import visible_devices_env, RAY_RESOURCE, K8S_RESOURCE
+from xpustat.neuron import NeuronDeviceStat, NeuronDeviceStatCollection
+from xpustat.tpu import TPUChipStat
+
+
+def test_visible_indices_ranges_and_new_vendors():
+    assert visible_indices("neuron", env={"NEURON_RT_VISIBLE_CORES": "0-3,8"}) == [0, 1, 2, 3, 8]
+    assert visible_indices("tpu", env={"TPU_VISIBLE_CHIPS": "1,0"}) == [1, 0]
+    assert visible_indices("tenstorrent", env={"TT_VISIBLE_DEVICES": "0"}) == [0]
+    assert visible_indices("neuron", env={"NEURON_RT_VISIBLE_CORES": "3-1"}) == []   # bad range skipped
+
+
+def _neuron(i, cores):
+    return NeuronDeviceStat(neuron_device=i, name="n", mem_used_mb=0, mem_total_mb=1, nc_count=len(cores), neuroncore_ids=cores)
+
+
+def test_neuron_cores_map_to_devices():
+    devs = [_neuron(0, [0, 1]), _neuron(1, [2, 3]), _neuron(2, [4, 5])]
+    env = {"NEURON_RT_VISIBLE_CORES": "2-5"}
+    assert framework_index(devs[0], env=env, siblings=devs) is None
+    assert framework_index(devs[1], env=env, siblings=devs) == 0
+    assert framework_index(devs[2], env=env, siblings=devs) == 1
+    assert torch_device(devs[2], env=env, siblings=devs) == "xla:1"
+    assert framework_index(devs[2], env={}, siblings=devs) == 2
+    # a device is visible if any of its cores is
+    assert framework_index(devs[0], env={"NEURON_RT_VISIBLE_CORES": "1"}, siblings=devs) == 0
+
+
+def test_visible_devices_env_index_and_uuid():
+    gpus = [_nv(2, 1, uuid="GPU-c"), _nv(0, 1, uuid="GPU-a")]
+    assert visible_devices_env(gpus) == {"CUDA_VISIBLE_DEVICES": "2,0"}
+    assert visible_devices_env(gpus, format="uuid") == {"CUDA_VISIBLE_DEVICES": "GPU-c,GPU-a"}
+    mixed = gpus + [AMDGPUStat(gpu_index=1, name="x", mem_used_mb=0, mem_total_mb=1),
+                    AppleGPUStat(gpu_index=0, name="x", mem_used_mb=0, mem_total_mb=1),
+                    _neuron(1, [2, 3]), TPUChipStat(device_id=3, name="t", mem_used_mb=0, mem_total_mb=1)]
+    env = visible_devices_env(mixed, format="uuid")
+    assert env == {"CUDA_VISIBLE_DEVICES": "GPU-c,GPU-a", "HIP_VISIBLE_DEVICES": "1",
+                   "NEURON_RT_VISIBLE_CORES": "2,3", "TPU_VISIBLE_CHIPS": "3"}
+    assert visible_devices_env([]) == {}
+    with pytest.raises(ValueError):
+        visible_devices_env(gpus, format="nope")
+
+
+def test_resource_names():
+    assert _nv(0, 1).ray_resource == "GPU" and _nv(0, 1).k8s_resource == "nvidia.com/gpu"
+    n = HuaweiNPUStat(npu_id=0, chip_id=0, name="x", mem_used_mb=0, mem_total_mb=1)
+    assert n.ray_resource == "NPU" and n.k8s_resource == "huawei.com/Ascend910"
+    assert _neuron(0, [0]).ray_resource == "neuron_cores"
+    assert AppleGPUStat(gpu_index=0, name="x", mem_used_mb=0, mem_total_mb=1).k8s_resource is None
+    assert set(RAY_RESOURCE) == set(K8S_RESOURCE) >= set(VISIBLE_DEVICES_ENV)

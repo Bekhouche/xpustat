@@ -3,7 +3,8 @@
 ```
 xpustat [-h] [-u] [-p] [-c] [-a] [-e] [-t] [-P] [-A] [-i [INTERVAL]] [-n N]
         [-f VENDOR [VENDOR ...]] [--no-header] [--no-color]
-        [--json] [--prometheus] [--serve-prometheus PORT] [--version]
+        [--json] [--prometheus] [--select N] [--by RANKING] [--min-free MB] [--uuid]
+        [--serve-prometheus PORT] [--cache-ttl SECS] [--version]
 ```
 
 Without flags, `xpustat` prints one line per device with the memory bar and exits.
@@ -53,7 +54,7 @@ On a terminal, watch mode draws on the alternate screen and redraws each frame i
 
 | Flag | Effect |
 |---|---|
-| `-f VENDOR ...`, `--filter` | show only these vendors; keys: `nvidia amd gaudi intel huawei hygon cambricon moorethreads apple neuron tpu tenstorrent` |
+| `-f VENDOR ...`, `--filter` | show only these vendors; keys: `nvidia amd gaudi intel huawei hygon cambricon moorethreads apple neuron tpu tenstorrent jetson` plus any registered plugin |
 | `--no-header` | omit the hostname and time line |
 | `--no-color` | plain text; colour is also disabled automatically when stdout is not a terminal |
 
@@ -64,7 +65,26 @@ On a terminal, watch mode draws on the alternate screen and redraws each frame i
 | `--json` | the `to_dict()` structure as JSON, see [Python API](python-api.md#json-output); cannot be combined with `-i` |
 | `--prometheus` | the Prometheus text format, once |
 | `--serve-prometheus PORT` | serve `/metrics` on `0.0.0.0:PORT` until interrupted, see [Prometheus](prometheus.md) |
+| `--cache-ttl SECS` | with `--serve-prometheus`: reuse a result up to SECS old between scrapes |
 | `--version` | print the version |
+
+### Device selection
+
+`--select N` picks the N best devices and prints the environment assignment that restricts a job to them, one line per vendor present, for example `CUDA_VISIBLE_DEVICES=1,2` or `HIP_VISIBLE_DEVICES=0`. The output is meant for the shell:
+
+```bash
+export $(xpustat --select 2)            # two freest devices, any vendor
+export $(xpustat --select 1 -f nvidia --by util --uuid)
+```
+
+| Flag | Effect |
+|---|---|
+| `--select N` | number of devices to pick; honours `-f` |
+| `--by` | `mem_free` (default), `mem_used`, `util`, `index` |
+| `--min-free MB` | skip devices with less free memory |
+| `--uuid` | emit UUIDs instead of indices where the vendor has them (NVIDIA, MIG) |
+
+Devices already hidden by the variable are never picked. The command exits 1 when nothing matches, or when the picked devices belong to a vendor without such a variable (Apple).
 
 ## Examples
 
@@ -76,9 +96,10 @@ xpustat -i 2 -n 10           # ten refreshes, two seconds apart
 xpustat -f nvidia amd        # only NVIDIA and AMD
 xpustat -A                   # architecture column
 xpustat --json | jq '.nvidia[].mem_free_mb'
+export $(xpustat --select 2)
 xpustat --serve-prometheus 9400
 ```
 
 ## Exit status
 
-The command exits 0 whether or not devices are found; "no accelerators detected" is a normal result. It exits 1 when `--json` is combined with `-i`.
+The command exits 0 whether or not devices are found; "no accelerators detected" is a normal result. It exits 1 when `--json` is combined with `-i`, and when `--select` finds no device.

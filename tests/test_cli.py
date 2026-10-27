@@ -1,3 +1,4 @@
+import sys
 import pytest
 from unittest.mock import patch, MagicMock
 from xpustat import cli
@@ -77,3 +78,48 @@ def test_proc_repr_separates_user_and_command():
     assert cli._proc_repr(p, show_user=True, show_pid=True, show_cmd=True) == "root:python/42(1024M)"
     assert cli._proc_repr(p, show_user=True, show_pid=False, show_cmd=False) == "root(1024M)"
     assert cli._proc_repr(p, show_user=False, show_pid=True, show_cmd=True) == "python/42(1024M)"
+
+
+def test_fields_generic_fallback_uses_mixin():
+    from xpustat._device import DeviceMixin
+    class PluginDev(DeviceMixin):
+        vendor = "acme"; _index_attr = "idx"
+        def __init__(self):
+            self.idx = 3; self.name = "Acme X1"; self.mem_used_mb = 10; self.mem_total_mb = 100
+            self.util_pct = 7; self.temp_c = 40; self.power_w = 12.5; self.processes = []
+    idx, name, arch, used, tot, util, temp, pwr, procs = cli._fields("acme", PluginDev())
+    assert (idx, name, arch, used, tot, util, temp, pwr, procs) == ("3", "Acme X1", None, 10, 100, 7, 40, 12.5, [])
+
+
+def test_cli_select_prints_env(monkeypatch, capsys):
+    from xpustat.nvidia import NvidiaGPUStat, NvidiaGPUStatCollection
+    from xpustat.xpu import XPUStatCollection
+    from xpustat.amd import AMDGPUStatCollection
+    from xpustat.gaudi import GaudiAIPStatCollection
+    from xpustat.intel_gpu import IntelGPUStatCollection
+    from xpustat.huawei import HuaweiNPUStatCollection
+    from xpustat.hygon import HygonDCUStatCollection
+    from xpustat.cambricon import CambriconMLUStatCollection
+    from xpustat.moorethreads import MooreThreadsGPUStatCollection
+    gpus = [NvidiaGPUStat(gpu_index=i, uuid=f"GPU-{i}", name="L4", mem_used_mb=u, mem_total_mb=24000)
+            for i, u in ((0, 20000), (1, 100), (2, 5000))]
+    stats = XPUStatCollection(NvidiaGPUStatCollection(gpus), AMDGPUStatCollection([]), GaudiAIPStatCollection([]),
+                              IntelGPUStatCollection([]), HuaweiNPUStatCollection([]), HygonDCUStatCollection([]),
+                              CambriconMLUStatCollection([]), MooreThreadsGPUStatCollection([]))
+    import xpustat._device as dev_mod
+    monkeypatch.setattr(dev_mod, "query_all", lambda *a, **k: stats, raising=False)
+    monkeypatch.setattr("xpustat.xpu.query_all", lambda *a, **k: stats)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    monkeypatch.setattr(sys, "argv", ["xpustat", "--select", "2"])
+    cli.main()
+    assert capsys.readouterr().out == "CUDA_VISIBLE_DEVICES=1,2\n"
+
+    monkeypatch.setattr(sys, "argv", ["xpustat", "--select", "1", "--uuid", "--by", "mem_used"])
+    cli.main()
+    assert capsys.readouterr().out == "CUDA_VISIBLE_DEVICES=GPU-1\n"
+
+    monkeypatch.setattr(sys, "argv", ["xpustat", "--select", "1", "--min-free", "99999"])
+    with pytest.raises(SystemExit) as e:
+        cli.main()
+    assert e.value.code == 1

@@ -18,6 +18,76 @@ except ImportError:
     _HAS_PYNVML = False
 
 
+class MIGInstanceStat(DeviceMixin):
+    """
+    One MIG compute instance on a partitioned NVIDIA GPU.
+
+    A MIG instance is what a CUDA process actually gets on an A100/H100 in
+    MIG mode: ``CUDA_VISIBLE_DEVICES`` takes its ``MIG-...`` UUID and a
+    process can enumerate only one instance. ``framework_index`` and
+    ``torch_device`` are therefore ``None``; use
+    ``visible_devices_env([inst], format="uuid")`` to target it.
+    """
+
+    vendor = "nvidia"
+    _index_attr = "parent_index"
+
+    def __init__(
+        self,
+        parent_index: int,
+        uuid: str,
+        mem_used_mb: int,
+        mem_total_mb: int,
+        gpu_instance_id: Optional[int] = None,
+        compute_instance_id: Optional[int] = None,
+        profile: Optional[str] = None,
+        processes: Optional[List[ProcessInfo]] = None,
+    ) -> None:
+        self.parent_index = parent_index
+        self.uuid = uuid
+        self.mem_used_mb = mem_used_mb
+        self.mem_total_mb = mem_total_mb
+        self.gpu_instance_id = gpu_instance_id
+        self.compute_instance_id = compute_instance_id
+        #: Profile name such as ``"1g.10gb"`` when the driver reports it.
+        self.profile = profile
+        self.processes: List[ProcessInfo] = processes or []
+
+    @property
+    def name(self) -> str:  # type: ignore[override]
+        return f"MIG {self.profile}" if self.profile else "MIG instance"
+
+    @property
+    def index_label(self) -> str:
+        gi = self.gpu_instance_id if self.gpu_instance_id is not None else "?"
+        ci = self.compute_instance_id if self.compute_instance_id is not None else "?"
+        return f"{self.parent_index}/{gi}.{ci}"
+
+    @property
+    def framework_index(self) -> Optional[int]:
+        return None
+
+    @property
+    def torch_device(self) -> Optional[str]:
+        return None
+
+    def to_dict(self) -> dict:
+        return {
+            "parent_index": self.parent_index,
+            "uuid": self.uuid,
+            "gpu_instance_id": self.gpu_instance_id,
+            "compute_instance_id": self.compute_instance_id,
+            "profile": self.profile,
+            "mem_used_mb": self.mem_used_mb,
+            "mem_total_mb": self.mem_total_mb,
+            "mem_free_mb": self.mem_free_mb,
+            "processes": [p.to_dict() for p in self.processes],
+        }
+
+    def __repr__(self) -> str:
+        return f"MIGInstanceStat(gpu={self.parent_index}, uuid={self.uuid!r}, mem_total={self.mem_total_mb}MB)"
+
+
 class NvidiaGPUStat(DeviceMixin):
     """Stats for a single NVIDIA GPU."""
 
@@ -37,6 +107,7 @@ class NvidiaGPUStat(DeviceMixin):
         power_limit_w: Optional[float] = None,
         processes: Optional[List[ProcessInfo]] = None,
         cuda_cc: Optional[str] = None,
+        mig_instances: Optional[List[MIGInstanceStat]] = None,
     ) -> None:
         self.gpu_index = gpu_index
         self.uuid = uuid
@@ -50,6 +121,8 @@ class NvidiaGPUStat(DeviceMixin):
         self.processes: List[ProcessInfo] = processes or []
         #: CUDA compute capability, e.g. ``"8.6"`` (RTX 3090) or ``"9.0"`` (H100).
         self.cuda_cc = cuda_cc
+        #: MIG compute instances when the GPU is in MIG mode (NVML path only).
+        self.mig_instances: List[MIGInstanceStat] = mig_instances or []
 
     def to_dict(self) -> dict:
         return {
@@ -65,6 +138,7 @@ class NvidiaGPUStat(DeviceMixin):
             "power_w": self.power_w,
             "power_limit_w": self.power_limit_w,
             "processes": [p.to_dict() for p in self.processes],
+            "mig_instances": [m.to_dict() for m in self.mig_instances],
         }
 
     def __repr__(self) -> str:
@@ -220,6 +294,7 @@ class NvidiaGPUStatCollection:
                         power_w=power_w,
                         power_limit_w=power_limit_w,
                         processes=processes,
+                        mig_instances=_mig_instances_nvml(handle, i),
                     )
                 )
 
@@ -329,6 +404,57 @@ class NvidiaGPUStatCollection:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _mig_instances_nvml(handle, parent_index: int) -> List[MIGInstanceStat]:
+    """
+    List the MIG compute instances of *handle* through NVML. Returns ``[]``
+    when MIG is off, unsupported (every GPU before A100), or on any error.
+    """
+    try:
+        current, _pending = _pynvml.nvmlDeviceGetMigMode(handle)
+    except Exception:
+        return []
+    if current != getattr(_pynvml, "NVML_DEVICE_MIG_ENABLE", 1):
+        return []
+    try:
+        count = _pynvml.nvmlDeviceGetMaxMigDeviceCount(handle)
+    except Exception:
+        return []
+
+    out: List[MIGInstanceStat] = []
+    for j in range(count):
+        try:
+            mig = _pynvml.nvmlDeviceGetMigDeviceHandleByIndex(handle, j)
+        except Exception:
+            continue  # unused slot
+        try:
+            uuid = _pynvml.nvmlDeviceGetUUID(mig)
+            if isinstance(uuid, bytes):
+                uuid = uuid.decode()
+            mem = _pynvml.nvmlDeviceGetMemoryInfo(mig)
+        except Exception:
+            continue
+        gi = ci = None
+        try:
+            gi = int(_pynvml.nvmlDeviceGetGpuInstanceId(mig))
+            ci = int(_pynvml.nvmlDeviceGetComputeInstanceId(mig))
+        except Exception:
+            pass
+        processes: List[ProcessInfo] = []
+        try:
+            for p in _pynvml.nvmlDeviceGetComputeRunningProcesses(mig):
+                gmem = p.usedGpuMemory // (1024 * 1024) if p.usedGpuMemory else None
+                username, command = enrich_process(p.pid, "")
+                processes.append(ProcessInfo(pid=p.pid, username=username, command=command, gpu_mem_mb=gmem))
+        except Exception:
+            pass
+        out.append(MIGInstanceStat(
+            parent_index=parent_index, uuid=str(uuid),
+            mem_used_mb=mem.used // (1024 * 1024), mem_total_mb=mem.total // (1024 * 1024),
+            gpu_instance_id=gi, compute_instance_id=ci, processes=processes,
+        ))
+    return out
+
 
 def _to_int(s: str) -> Optional[int]:
     try:

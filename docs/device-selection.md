@@ -44,7 +44,11 @@ Each framework runtime reads an environment variable that restricts and reorders
 | intel | `ZE_AFFINITY_MASK` (the device part of `device.subdevice` entries) |
 | cambricon | `MLU_VISIBLE_DEVICES` |
 | moorethreads | `MUSA_VISIBLE_DEVICES` |
-| apple, neuron, tpu, tenstorrent | none |
+| tpu | `TPU_VISIBLE_CHIPS` |
+| tenstorrent | `TT_VISIBLE_DEVICES` |
+| neuron | `NEURON_RT_VISIBLE_CORES`, which lists NeuronCore ids (ranges such as `0-3` allowed); a device is visible when any of its cores is |
+| jetson | `CUDA_VISIBLE_DEVICES` |
+| apple | none |
 
 ### `visible_indices(vendor, env=None, uuids=None)`
 
@@ -72,6 +76,31 @@ The `torch.device` string built from the vendor's device type and `framework_ind
 
 The mapping is the dictionary `xpustat.TORCH_DEVICE_TYPE`; the variables are `xpustat.VISIBLE_DEVICES_ENV`.
 
+### `visible_devices_env(devices, format="index")`
+
+The inverse of the two functions above: given chosen devices, return the assignments that restrict a job to them, one entry per vendor present, e.g. `{"CUDA_VISIBLE_DEVICES": "2,0"}`. The order of `devices` becomes the framework's device order. With `format="uuid"`, devices that have a UUID (NVIDIA GPUs and MIG instances) are listed by it, which survives a change in enumeration order. Vendors without a variable contribute nothing; for Neuron the value lists the devices' NeuronCore ids. The CLI's `--select` prints this mapping.
+
+```python
+chosen = xpustat.pick_device(n=2)
+os.environ.update(xpustat.visible_devices_env(chosen))   # before importing torch
+```
+
+## Scheduler resource names
+
+Every device carries `ray_resource` and `k8s_resource` so a scheduler built on xpustat can emit the right request. The Ray names come from the accelerator managers in Ray's source; the Kubernetes names from the vendors' device-plugin documentation, and are `None` where that could not be confirmed.
+
+| Vendor | Ray | Kubernetes |
+|---|---|---|
+| nvidia, jetson | `GPU` | `nvidia.com/gpu` |
+| amd | `GPU` | `amd.com/gpu` |
+| hygon, intel, apple | `GPU` | unconfirmed |
+| huawei | `NPU` | `huawei.com/Ascend910` (310P cards report `huawei.com/Ascend310P`) |
+| gaudi | `HPU` | `habana.ai/gaudi` |
+| tpu | `TPU` | unconfirmed |
+| neuron | `neuron_cores` | `aws.amazon.com/neuron` per device (`aws.amazon.com/neuroncore` per core) |
+| tenstorrent | `TTNPU` | unconfirmed |
+| cambricon, moorethreads | none in Ray | unconfirmed |
+
 ## Verified behaviour
 
 On a host with seven NVIDIA L4 GPUs and `CUDA_VISIBLE_DEVICES` set to the UUID of GPU 5 followed by `3`, `pick_device(n=5)` returned GPU 3 as `cuda:1` and GPU 5 as `cuda:0` and nothing else, which is the order CUDA assigns. On an AMD host with a Radeon AI PRO R9700 and an integrated GPU, `HIP_VISIBLE_DEVICES=1` made the integrated GPU `cuda:0` and hid the R9700.
@@ -79,5 +108,5 @@ On a host with seven NVIDIA L4 GPUs and `CUDA_VISIBLE_DEVICES` set to the UUID o
 ## Limitations
 
 - `pick_device` ranks by what the vendor tool reports at the moment of the call. It does not reserve the device; two processes starting at the same time can pick the same one.
-- The Neuron runtime restricts by NeuronCore (`NEURON_RT_VISIBLE_CORES`), not by device, so no visible-devices mapping is applied for Neuron.
+- MIG instances are nested under their parent GPU (`gpu.mig_instances`) and are not candidates for `pick_device`; target one with `visible_devices_env([instance], format="uuid")`.
 - The `xla` index for TPU and Neuron is the device index as reported by `tpu-info` and `neuron-ls`; it is not checked against the XLA runtime's own ordering.

@@ -14,13 +14,19 @@ Supported backends (silently skipped if the tool is not installed):
     - AWS Neuron      neuron-ls
     - Google TPU      tpu-info
     - Tenstorrent     tt-smi
+    - NVIDIA Jetson   tegrastats
+    - plugins         any package exposing an ``xpustat.backends`` entry point
 """
 
 from __future__ import annotations
 
 import datetime
 import json
+import os
 import socket
+import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Iterator, List, Optional, Union
 
@@ -34,6 +40,7 @@ from .hygon import HygonDCUStat, HygonDCUStatCollection
 from .intel_gpu import IntelGPUStat, IntelGPUStatCollection
 from .moorethreads import MooreThreadsGPUStat, MooreThreadsGPUStatCollection
 from .nvidia import NvidiaGPUStat, NvidiaGPUStatCollection
+from .jetson import JetsonGPUStat, JetsonGPUStatCollection
 from .neuron import NeuronDeviceStat, NeuronDeviceStatCollection
 from .tpu import TPUChipStat, TPUChipStatCollection
 from .tenstorrent import TenstorrentDeviceStat, TenstorrentDeviceStatCollection
@@ -42,7 +49,7 @@ from .tenstorrent import TenstorrentDeviceStat, TenstorrentDeviceStatCollection
 AnyDeviceStat = Union[
     NvidiaGPUStat, AMDGPUStat, GaudiAIPStat, IntelGPUStat,
     HuaweiNPUStat, HygonDCUStat, CambriconMLUStat, MooreThreadsGPUStat,
-    AppleGPUStat, NeuronDeviceStat, TPUChipStat, TenstorrentDeviceStat,
+    AppleGPUStat, NeuronDeviceStat, TPUChipStat, TenstorrentDeviceStat, JetsonGPUStat,
 ]
 
 
@@ -91,6 +98,8 @@ class XPUStatCollection:
         neuron: NeuronDeviceStatCollection = None,
         tpu: TPUChipStatCollection = None,
         tenstorrent: TenstorrentDeviceStatCollection = None,
+        jetson: JetsonGPUStatCollection = None,
+        **plugins: Any,
     ) -> None:
         self.nvidia = nvidia
         self.amd = amd
@@ -104,6 +113,14 @@ class XPUStatCollection:
         self.neuron = neuron if neuron is not None else NeuronDeviceStatCollection([])
         self.tpu = tpu if tpu is not None else TPUChipStatCollection([])
         self.tenstorrent = tenstorrent if tenstorrent is not None else TenstorrentDeviceStatCollection([])
+        self.jetson = jetson if jetson is not None else JetsonGPUStatCollection([])
+        # Plugin backends (entry point group ``xpustat.backends``), keyed by vendor.
+        self._plugins: dict = {}
+        for name, cls in _PLUGIN_BACKENDS.items():
+            self._plugins[name] = plugins.get(name) if plugins.get(name) is not None else cls([])
+        for name in plugins:
+            if name not in self._plugins:
+                raise TypeError(f"Unknown backend {name!r}; register it with xpustat.register_backend() first")
 
     # ------------------------------------------------------------------
     # Container protocol
@@ -124,6 +141,8 @@ class XPUStatCollection:
             + list(self.neuron)
             + list(self.tpu)
             + list(self.tenstorrent)
+            + list(self.jetson)
+            + [d for col in self._plugins.values() for d in col]
         )
 
     def __iter__(self) -> Iterator[AnyDeviceStat]:
@@ -135,6 +154,13 @@ class XPUStatCollection:
 
     def __bool__(self) -> bool:
         return len(self) > 0
+
+    def __getattr__(self, name: str):
+        # Plugin collections are reachable as attributes like the built-in ones.
+        plugins = self.__dict__.get("_plugins", {})
+        if name in plugins:
+            return plugins[name]
+        raise AttributeError(name)
 
     def __getitem__(self, vendor: str):
         """
@@ -175,7 +201,7 @@ class XPUStatCollection:
               ...
             }
         """
-        return {
+        out = {
             "nvidia":       self.nvidia.to_dict()["gpus"],
             "amd":          self.amd.to_dict()["gpus"],
             "gaudi":        self.gaudi.to_dict()["aips"],
@@ -188,7 +214,13 @@ class XPUStatCollection:
             "neuron":       self.neuron.to_dict()["devices"],
             "tpu":          self.tpu.to_dict()["chips"],
             "tenstorrent":  self.tenstorrent.to_dict()["devices"],
+            "jetson":       self.jetson.to_dict()["gpus"],
         }
+        for name, col in self._plugins.items():
+            d = col.to_dict()
+            # A plugin's to_dict() holds one list under a vendor-chosen key.
+            out[name] = next((v for v in d.values() if isinstance(v, list)), []) if isinstance(d, dict) else list(d)
+        return out
 
     def to_json(self, indent: int = 2, metadata: bool = False) -> str:
         """
@@ -238,17 +270,82 @@ _BACKENDS: List[tuple] = [
     ("neuron",       NeuronDeviceStatCollection),
     ("tpu",          TPUChipStatCollection),
     ("tenstorrent",  TenstorrentDeviceStatCollection),
+    ("jetson",       JetsonGPUStatCollection),
 ]
 
-_BACKENDS_KEYS: List[str] = [name for name, _ in _BACKENDS]
+#: Backends added at runtime, by :func:`register_backend` or entry points.
+_PLUGIN_BACKENDS: dict = {}
+_BUILTIN_KEYS: List[str] = [name for name, _ in _BACKENDS]
+
+
+def register_backend(name: str, collection_cls) -> None:
+    """
+    Register an extra backend under vendor key *name*.
+
+    *collection_cls* must follow the backend contract: ``collection_cls([])``
+    builds an empty collection, ``collection_cls.new_query()`` queries the
+    hardware and never raises, instances support ``len()``, iteration,
+    indexing and ``to_dict()`` returning one list under a vendor-chosen key,
+    and each device subclasses :class:`xpustat.DeviceMixin`.
+
+    Packages can register automatically with an entry point::
+
+        [project.entry-points."xpustat.backends"]
+        acme = "xpustat_acme:AcmeStatCollection"
+    """
+    if name in _BUILTIN_KEYS:
+        raise ValueError(f"{name!r} is a built-in backend")
+    if not (name.isidentifier() and name.islower()):
+        raise ValueError("backend name must be a lowercase identifier")
+    _PLUGIN_BACKENDS[name] = collection_cls
+    _refresh_registry()
+
+
+def unregister_backend(name: str) -> None:
+    """Remove a backend added with :func:`register_backend`."""
+    _PLUGIN_BACKENDS.pop(name, None)
+    _refresh_registry()
+
+
+def _refresh_registry() -> None:
+    global _BACKENDS_KEYS, _BACKENDS_MAP
+    _BACKENDS_KEYS = _BUILTIN_KEYS + list(_PLUGIN_BACKENDS)
+    _BACKENDS_MAP = {**dict(_BACKENDS), **_PLUGIN_BACKENDS}
+
+
+def _load_entry_points() -> None:
+    """Register every ``xpustat.backends`` entry point; a broken plugin is skipped."""
+    try:
+        from importlib.metadata import entry_points
+    except ImportError:  # pragma: no cover
+        return
+    try:
+        eps = entry_points()
+        group = eps.select(group="xpustat.backends") if hasattr(eps, "select") else eps.get("xpustat.backends", [])
+    except Exception:
+        return
+    for ep in group:
+        try:
+            register_backend(ep.name, ep.load())
+        except Exception as exc:
+            if os.environ.get("XPUSTAT_DEBUG"):
+                sys.stderr.write(f"xpustat: plugin {ep.name!r} not loaded: {exc}\n")
+
+_BACKENDS_KEYS: List[str] = list(_BUILTIN_KEYS)
 _BACKENDS_MAP: dict = {name: cls for name, cls in _BACKENDS}
+_load_entry_points()
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def query_all(parallel: bool = True, vendors: Optional[List[str]] = None) -> XPUStatCollection:
+_CACHE_LOCK = threading.Lock()
+_CACHE: dict = {"key": None, "time": 0.0, "stats": None}
+
+
+def query_all(parallel: bool = True, vendors: Optional[List[str]] = None,
+              max_age: Optional[float] = None) -> XPUStatCollection:
     """
     Query every supported accelerator backend and return an XPUStatCollection.
 
@@ -260,16 +357,28 @@ def query_all(parallel: bool = True, vendors: Optional[List[str]] = None) -> XPU
                   Pass ``False`` for sequential execution (useful for debugging).
         vendors: Optional list of vendor keys to query. If provided, only these
                  backends will be queried, and others will be empty.
+        max_age: Reuse the previous result if it is at most this many seconds
+                 old (same ``vendors``). ``None`` (default) always queries.
+                 Meant for exporters and loops that poll faster than the
+                 vendor tools can answer.
 
     Returns:
         :class:`XPUStatCollection` populated with results.
     """
-    results: dict = {}
-    _empty = {name: cls([]) for name, cls in _BACKENDS}
+    cache_key = None if vendors is None else tuple(sorted(vendors))
+    if max_age is not None:
+        with _CACHE_LOCK:
+            if (_CACHE["stats"] is not None and _CACHE["key"] == cache_key
+                    and time.monotonic() - _CACHE["time"] <= max_age):
+                return _CACHE["stats"]
 
-    backends_to_query = _BACKENDS
+    all_backends = list(_BACKENDS) + list(_PLUGIN_BACKENDS.items())
+    results: dict = {}
+    _empty = {name: cls([]) for name, cls in all_backends}
+
+    backends_to_query = all_backends
     if vendors is not None:
-        backends_to_query = [(n, c) for n, c in _BACKENDS if n in vendors]
+        backends_to_query = [(n, c) for n, c in all_backends if n in vendors]
 
     if parallel:
         with ThreadPoolExecutor(max_workers=max(1, len(backends_to_query))) as pool:
@@ -294,7 +403,7 @@ def query_all(parallel: bool = True, vendors: Optional[List[str]] = None) -> XPU
         if name not in results:
             results[name] = _empty[name]
 
-    return XPUStatCollection(
+    stats = XPUStatCollection(
         nvidia=results["nvidia"],
         amd=results["amd"],
         gaudi=results["gaudi"],
@@ -307,7 +416,12 @@ def query_all(parallel: bool = True, vendors: Optional[List[str]] = None) -> XPU
         neuron=results["neuron"],
         tpu=results["tpu"],
         tenstorrent=results["tenstorrent"],
+        jetson=results["jetson"],
+        **{name: results[name] for name in _PLUGIN_BACKENDS},
     )
+    with _CACHE_LOCK:
+        _CACHE.update(key=cache_key, time=time.monotonic(), stats=stats)
+    return stats
 
 
 def query(vendor: str):
@@ -317,7 +431,7 @@ def query(vendor: str):
     Args:
         vendor: One of: ``nvidia``, ``amd``, ``gaudi``, ``intel``,
                 ``huawei``, ``hygon``, ``cambricon``, ``moorethreads``, ``apple``,
-                ``neuron``, ``tpu``, ``tenstorrent``.
+                ``neuron``, ``tpu``, ``tenstorrent``, ``jetson``, or a registered plugin.
 
     Returns:
         The vendor-specific ``*StatCollection`` (iterable, has ``to_dict()``).

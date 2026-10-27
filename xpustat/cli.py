@@ -55,7 +55,13 @@ _VENDORS: dict = {
     "neuron":       ("94",  "NEURON"),    # bright blue
     "tpu":          ("92",  "TPU"),       # bright green
     "tenstorrent":  ("93",  "TENST."),    # bright yellow
+    "jetson":       ("32",  "JETSON"),    # green, like NVIDIA
 }
+
+from .xpu import _BACKENDS_KEYS as _ALL_KEYS  # noqa: E402  (built-ins + plugins)
+for _key in _ALL_KEYS:
+    if _key not in _VENDORS:
+        _VENDORS[_key] = ("37", _key[:6].upper())
 
 _LBL_W = max(len(lbl) for _, lbl in _VENDORS.values())
 
@@ -113,7 +119,16 @@ def _fields(vendor: str, dev):
     if vendor == "tenstorrent":
         return str(dev.tt_device), dev.name, None, \
                dev.mem_used_mb, dev.mem_total_mb, None, dev.temp_c, dev.power_w, processes
-    return "?", str(dev), None, 0, 0, None, None, None, []
+    if vendor == "jetson":
+        return str(dev.gpu_index), dev.name, None, \
+               dev.mem_used_mb, dev.mem_total_mb, dev.util_pct, dev.temp_c, dev.power_w, processes
+    # Generic fallback (plugin backends): read the vendor-neutral fields.
+    util = getattr(dev, "util_pct", None)
+    if util is None:
+        util = getattr(dev, "ai_core_pct", None)
+    return (getattr(dev, "index_label", "?"), getattr(dev, "name", str(dev)), None,
+            getattr(dev, "mem_used_mb", 0), getattr(dev, "mem_total_mb", 0),
+            util, getattr(dev, "temp_c", None), getattr(dev, "power_w", None), processes)
 
 
 def _fmt_cc(cc: Optional[str]) -> Optional[str]:
@@ -292,6 +307,15 @@ def _render(
 
             _p(line)
 
+            # ── MIG instances (NVIDIA in MIG mode) ──────────────────────────
+            for m in getattr(dev, "mig_instances", []) or []:
+                indent = " " * (_LBL_W + 4)
+                m_used = _c("1;33", f"{m.mem_used_mb:>{_MEM_W},}")
+                m_tot  = _dim(f"{m.mem_total_mb:>{_MEM_W},} MB")
+                m_pct  = f"  {int(m.mem_used_mb / m.mem_total_mb * 100):3d}%" if m.mem_total_mb > 0 else "    N/A"
+                _p(f"{indent}{_dim('├─')} {_bold(m.index_label):<10} {m.name:<{_NAME_W - 8}}{sep}"
+                   f"{m_used} {_dim('/')} {m_tot}  {_mem_bar(color, m.mem_used_mb, m.mem_total_mb)}{m_pct}  {_dim(m.uuid)}")
+
             # ── process sub-lines ───────────────────────────────────────────
             if show_procs and procs:
                 indent = " " * (_LBL_W + 8)   # align under device name
@@ -421,6 +445,7 @@ def main() -> None:
             "  xpustat -i 1 -n 10           # 10 refreshes then exit\n"
             "  xpustat -f nvidia amd        # show only NVIDIA and AMD\n"
             "  xpustat --json               # raw JSON\n"
+            "  export $(xpustat --select 2) # restrict a job to the 2 freest devices\n"
             "  xpustat --prometheus         # Prometheus text format, once\n"
             "  xpustat --serve-prometheus 9400   # /metrics endpoint for Prometheus\n"
         ),
@@ -454,11 +479,40 @@ def main() -> None:
     parser.add_argument("--json",    action="store_true", help="Print raw JSON.")
     parser.add_argument("--prometheus", action="store_true",
                         help="Print metrics in Prometheus text format and exit.")
+
+    # ── device selection ─────────────────────────────────────────────────────
+    sel = parser.add_argument_group("device selection (prints VAR=ids lines for the shell)")
+    sel.add_argument("--select", metavar="N", type=int, default=None,
+                     help="Pick the N best devices and print e.g. CUDA_VISIBLE_DEVICES=2,0. "
+                          "Use as: export $(xpustat --select 2). Honours -f.")
+    sel.add_argument("--by", choices=["mem_free", "mem_used", "util", "index"], default="mem_free",
+                     help="Ranking for --select (default: mem_free).")
+    sel.add_argument("--min-free", metavar="MB", type=int, default=0,
+                     help="Skip devices with less than MB free (with --select).")
+    sel.add_argument("--uuid", action="store_true",
+                     help="Emit UUIDs instead of indices where the vendor has them (with --select).")
     parser.add_argument("--serve-prometheus", metavar="PORT", type=int, default=None,
                         help="Serve Prometheus metrics at http://0.0.0.0:PORT/metrics (fresh query per scrape).")
+    parser.add_argument("--cache-ttl", metavar="SECS", type=float, default=0.0,
+                        help="With --serve-prometheus: reuse a result up to SECS old between scrapes.")
     parser.add_argument("--version", action="version",   version=f"xpustat {__version__}")
 
     args = parser.parse_args()
+
+    if args.select is not None:
+        from ._device import pick_device, visible_devices_env
+        chosen = pick_device(n=args.select, vendor=args.filter, by=args.by, min_free_mb=args.min_free)
+        if not chosen:
+            sys.stderr.write("xpustat: no device matches the selection\n")
+            sys.exit(1)
+        env = visible_devices_env(chosen, format="uuid" if args.uuid else "index")
+        if not env:
+            sys.stderr.write("xpustat: selected devices have no visible-devices variable "
+                             f"({', '.join(sorted({d.vendor for d in chosen}))})\n")
+            sys.exit(1)
+        for var, value in env.items():
+            print(f"{var}={value}")
+        return
 
     if args.prometheus:
         from .prometheus import to_prometheus
@@ -467,7 +521,7 @@ def main() -> None:
 
     if args.serve_prometheus is not None:
         from .prometheus import serve
-        serve(port=args.serve_prometheus)
+        serve(port=args.serve_prometheus, max_age=max(args.cache_ttl, 0.0))
         return
 
     if args.json:

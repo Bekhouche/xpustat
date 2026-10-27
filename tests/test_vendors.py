@@ -387,3 +387,110 @@ def test_new_backends_off_host_return_empty(monkeypatch):
     assert len(NeuronDeviceStatCollection.new_query()) == 0
     assert len(TPUChipStatCollection.new_query()) == 0
     assert len(TenstorrentDeviceStatCollection.new_query()) == 0
+
+
+# ---------------------------------------------------------------------------
+# NVIDIA Jetson
+# ---------------------------------------------------------------------------
+
+from xpustat.jetson import JetsonGPUStat, JetsonGPUStatCollection, _parse_tegrastats
+
+_TEGRA_ORIN = ("10-24-2026 10:00:00 RAM 2567/7772MB (lfb 1x4MB) SWAP 0/3886MB (cached 0MB) "
+               "CPU [1%@729,0%@729,0%@729,0%@729,off,off] EMC_FREQ 0%@2133 GR3D_FREQ 12%@[624,624] "
+               "VIC_FREQ 0%@115 APE 174 cpu@44.5C soc2@42.093C soc0@43.5C gpu@44.343C tj@44.5C soc1@43.5C "
+               "VDD_IN 4522mW/4522mW VDD_CPU_GPU_CV 486mW/486mW VDD_SOC 1296mW/1296mW")
+_TEGRA_XAVIER = ("RAM 1234/15817MB (lfb 3000x4MB) SWAP 0/7908MB (cached 0MB) CPU [0%@1190,off,off,0%@1190] "
+                 "EMC_FREQ 0% GR3D_FREQ 0% AO@36.5C GPU@36C PMIC@100C AUX@36C CPU@37.5C thermal@36.5C "
+                 "GPU 0/0 CPU 155/155 SOC 931/931 CV 0/0 VDDRQ 155/155 SYS5V 1555/1555")
+_TEGRA_NANO = ("RAM 1800/3964MB (lfb 20x4MB) SWAP 0/1982MB (cached 0MB) IRAM 0/252kB(lfb 252kB) "
+               "CPU [10%@1479,8%@1479,7%@1479,8%@1479] EMC_FREQ 3%@1600 GR3D_FREQ 25%@76 "
+               "PLL@35C CPU@37.5C PMIC@100C GPU@36.5C AO@42.5C thermal@36.75C POM_5V_IN 1500/1500 POM_5V_GPU 120/120 POM_5V_CPU 500/500")
+
+
+def test_jetson_parse_orin():
+    g = _parse_tegrastats(_TEGRA_ORIN, "NVIDIA Jetson Orin Nano Developer Kit")
+    assert g.vendor == "jetson" and g.name.startswith("NVIDIA Jetson Orin")
+    assert (g.mem_used_mb, g.mem_total_mb, g.mem_free_mb) == (2567, 7772, 5205)
+    assert g.util_pct == 12 and g.temp_c == 44
+    assert g.power_w == 0.486 and g.power_rail == "VDD_CPU_GPU_CV"
+    assert g.torch_device == "cuda:0" and g.k8s_resource == "nvidia.com/gpu"
+    assert g.to_dict()["unified_memory"] is True
+
+
+def test_jetson_parse_xavier_and_nano():
+    x = _parse_tegrastats(_TEGRA_XAVIER)
+    assert (x.mem_used_mb, x.mem_total_mb, x.util_pct, x.temp_c) == (1234, 15817, 0, 36)
+    assert x.power_w == 0.0 and x.power_rail == "GPU"          # Xavier rail named "GPU", not the GPU@..C temp
+    n = _parse_tegrastats(_TEGRA_NANO)
+    assert (n.util_pct, n.temp_c, n.power_w, n.power_rail) == (25, 36, 0.12, "POM_5V_GPU")
+    assert _parse_tegrastats("garbage without ram") is None
+    assert JetsonGPUStatCollection([n])[0] is n
+
+
+def test_jetson_backend_yields_to_nvidia_smi(monkeypatch):
+    import xpustat.jetson as jm
+    monkeypatch.setattr(jm.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None)
+    assert len(JetsonGPUStatCollection.new_query()) == 0
+    monkeypatch.setattr(jm.shutil, "which", lambda name: "/usr/bin/tegrastats" if name == "tegrastats" else None)
+    monkeypatch.setattr(JetsonGPUStatCollection, "is_jetson", staticmethod(lambda: True))
+    monkeypatch.setattr(jm, "_tegrastats_line", lambda *a, **k: _TEGRA_NANO)
+    monkeypatch.setattr(jm, "_read_model", lambda: "NVIDIA Jetson Nano Developer Kit")
+    col = JetsonGPUStatCollection.new_query()
+    assert len(col) == 1 and col[0].name == "NVIDIA Jetson Nano Developer Kit" and col[0].util_pct == 25
+
+
+# ---------------------------------------------------------------------------
+# NVIDIA MIG
+# ---------------------------------------------------------------------------
+
+from xpustat.nvidia import MIGInstanceStat
+from xpustat import visible_devices_env
+
+
+def test_mig_instance_stat():
+    m = MIGInstanceStat(parent_index=1, uuid="MIG-abc", mem_used_mb=100, mem_total_mb=10240,
+                        gpu_instance_id=3, compute_instance_id=0, profile="1g.10gb")
+    assert m.vendor == "nvidia" and m.device_index == 1 and m.index_label == "1/3.0"
+    assert m.name == "MIG 1g.10gb" and m.mem_free_mb == 10140
+    assert m.framework_index is None and m.torch_device is None
+    assert visible_devices_env([m], format="uuid") == {"CUDA_VISIBLE_DEVICES": "MIG-abc"}
+    g = NvidiaGPUStat(gpu_index=1, uuid="GPU-x", name="H100", mem_used_mb=0, mem_total_mb=81920, mig_instances=[m])
+    assert g.to_dict()["mig_instances"][0]["uuid"] == "MIG-abc"
+    assert NvidiaGPUStat(gpu_index=0, uuid="u", name="n", mem_used_mb=0, mem_total_mb=1).to_dict()["mig_instances"] == []
+
+
+def test_mig_nvml_helper_handles_unsupported(monkeypatch):
+    import xpustat.nvidia as nv
+    class FakeNVML:
+        NVML_DEVICE_MIG_ENABLE = 1
+        class NVMLError(Exception): pass
+        @staticmethod
+        def nvmlDeviceGetMigMode(h): raise FakeNVML.NVMLError("not supported")
+    monkeypatch.setattr(nv, "_pynvml", FakeNVML, raising=False)
+    assert nv._mig_instances_nvml(object(), 0) == []
+
+    class FakeNVMLMig(FakeNVML):
+        @staticmethod
+        def nvmlDeviceGetMigMode(h): return (1, 1)
+        @staticmethod
+        def nvmlDeviceGetMaxMigDeviceCount(h): return 2
+        @staticmethod
+        def nvmlDeviceGetMigDeviceHandleByIndex(h, j):
+            if j == 1: raise FakeNVML.NVMLError("unused slot")
+            return ("mig", j)
+        @staticmethod
+        def nvmlDeviceGetUUID(h): return b"MIG-0000"
+        @staticmethod
+        def nvmlDeviceGetMemoryInfo(h):
+            class M: used = 512 * 1024 * 1024; total = 10 * 1024 ** 3
+            return M()
+        @staticmethod
+        def nvmlDeviceGetGpuInstanceId(h): return 5
+        @staticmethod
+        def nvmlDeviceGetComputeInstanceId(h): return 0
+        @staticmethod
+        def nvmlDeviceGetComputeRunningProcesses(h): return []
+    monkeypatch.setattr(nv, "_pynvml", FakeNVMLMig, raising=False)
+    migs = nv._mig_instances_nvml(object(), 2)
+    assert len(migs) == 1 and migs[0].uuid == "MIG-0000" and migs[0].index_label == "2/5.0"
+    assert (migs[0].mem_used_mb, migs[0].mem_total_mb) == (512, 10240)

@@ -21,6 +21,7 @@ A unified accelerator stat tool: `gpustat`, but for every vendor.
 | 🔲 Untested | AWS | Neuron (Inferentia / Trainium) | `neuron-ls` | `neuron` |
 | 🔲 Untested | Google | Cloud TPU (v4 – v6e) | `tpu-info` | `tpu` |
 | 🔲 Untested | Tenstorrent | Wormhole / Blackhole | `tt-smi` | `tenstorrent` |
+| 🔲 Untested | NVIDIA | Jetson Nano / Xavier / Orin | `tegrastats` | `jetson` |
 
 > **Legend:** ✅ tested on real hardware; 🔲 implemented, awaiting a hardware test
 >
@@ -30,6 +31,8 @@ A unified accelerator stat tool: `gpustat`, but for every vendor.
 > machine's total RAM and `mem_used_mb` is the slice currently held by the GPU driver.
 > macOS exposes GPU temperature, power, and per-process usage only to root (`powermetrics`),
 > so those columns show `N/A` on Macs. Discrete GPUs in Intel Macs report real VRAM.
+>
+> **Plugins:** any package can add a vendor through the `xpustat.backends` entry point, or at runtime with `xpustat.register_backend()`; see [docs/contributing.md](docs/contributing.md).
 >
 > **Neuron / Tenstorrent note:** `neuron-ls` and `tt-smi` report inventory, processes and telemetry
 > but not live memory usage, so those backends show memory as `0` / `N/A`.
@@ -74,6 +77,7 @@ xpustat -a                   # show everything (util, temp, power, arch, user, p
 xpustat -f nvidia amd        # show only NVIDIA and AMD
 xpustat --no-color           # plain text, no ANSI codes
 xpustat --json               # raw JSON output
+export $(xpustat --select 2) # restrict a job to the 2 freest devices (CUDA_VISIBLE_DEVICES=..., HIP_..., ...)
 xpustat --prometheus         # Prometheus text format, once
 xpustat --serve-prometheus 9400   # serve http://0.0.0.0:9400/metrics (fresh query per scrape)
 xpustat --version
@@ -132,6 +136,7 @@ Every device object carries vendor-neutral fields on top of the vendor ones:
 | `mem_free_mb` | free memory (for Apple unified memory: what the OS can still give the GPU) |
 | `framework_index` | index the ML framework will see after `CUDA_VISIBLE_DEVICES` / `HIP_VISIBLE_DEVICES` / `ASCEND_RT_VISIBLE_DEVICES` / … (`None` if hidden) |
 | `torch_device` | `torch.device` string: `cuda:N` (NVIDIA, AMD, Hygon), `mps`, `npu:N`, `hpu:N`, `xpu:N`, `mlu:N`, `musa:N`, `xla:N` |
+| `ray_resource`, `k8s_resource` | the Ray resource name (`GPU`, `NPU`, `TPU`, `neuron_cores`, ...) and the Kubernetes extended-resource name (`nvidia.com/gpu`, `amd.com/gpu`, ...) |
 
 ```python
 import xpustat
@@ -142,6 +147,8 @@ model.to(dev.torch_device)                # "cuda:2", "npu:0", "mps", ...
 xpustat.pick_device(n=2, by="util")       # two least-busy devices
 xpustat.pick_device(vendor="amd", min_free_mb=8000)
 xpustat.visible_indices("nvidia")         # parsed CUDA_VISIBLE_DEVICES, or None when unset
+xpustat.visible_devices_env(devs)         # {"CUDA_VISIBLE_DEVICES": "2,0"} for a chosen list
+xpustat.query_all(max_age=1.0)            # reuse a result younger than 1 s
 ```
 
 ### Prometheus / Grafana
@@ -156,6 +163,14 @@ Exposes `xpustat_memory_{used,total,free}_bytes`, `xpustat_utilization_percent`,
 `xpustat.to_prometheus(stats)` returns the same text for embedding in your own exporter.
 
 ## Version history
+
+### Unreleased
+- NVIDIA Jetson backend (`jetson`) via `tegrastats`; MIG instances on the NVML path (`gpu.mig_instances`)
+- `xpustat --select N` prints the vendor's visible-devices assignment; `visible_devices_env()` is the library form
+- `TPU_VISIBLE_CHIPS`, `TT_VISIBLE_DEVICES` and `NEURON_RT_VISIBLE_CORES` (core ranges) are honoured
+- `ray_resource` and `k8s_resource` on every device
+- Plugin backends through the `xpustat.backends` entry point and `register_backend()`
+- `query_all(max_age=...)` and `--cache-ttl` for the Prometheus exporter
 
 ### 0.3.0
 - Apple Silicon GPU support (`apple` backend) read in-process from IOKit (~2 ms, `ioreg` fallback), no root required; tested on Apple M5

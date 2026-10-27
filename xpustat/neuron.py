@@ -52,6 +52,7 @@ class NeuronDeviceStat(DeviceMixin):
         nc_count: Optional[int] = None,
         bdf: Optional[str] = None,
         processes: Optional[List[ProcessInfo]] = None,
+        neuroncore_ids: Optional[List[int]] = None,
     ) -> None:
         self.neuron_device = neuron_device
         self.name = name
@@ -61,16 +62,23 @@ class NeuronDeviceStat(DeviceMixin):
         self.nc_count = nc_count
         self.bdf = bdf
         self.processes: List[ProcessInfo] = processes or []
+        #: Global NeuronCore ids on this device; NEURON_RT_VISIBLE_CORES lists these.
+        self.neuroncore_ids: List[int] = list(neuroncore_ids or [])
 
     @property
     def util_pct(self) -> Optional[int]:
         return None
+
+    @property
+    def _visible_ids(self) -> List[int]:
+        return self.neuroncore_ids
 
     def to_dict(self) -> dict:
         return {
             "neuron_device": self.neuron_device,
             "name": self.name,
             "nc_count": self.nc_count,
+            "neuroncore_ids": self.neuroncore_ids,
             "bdf": self.bdf,
             "mem_used_mb": self.mem_used_mb,
             "mem_total_mb": self.mem_total_mb,
@@ -154,6 +162,7 @@ def _parse_neuron_ls(output: str) -> List[NeuronDeviceStat]:
 
         nc = entry.get("nc_count")
         nc_count = int(nc) if isinstance(nc, int) else None
+        core_ids = [int(c) for c in (entry.get("neuroncore_ids") or []) if isinstance(c, int)]
         mem = entry.get("memory_size")
         mem_total_mb = int(mem) // _MIB if isinstance(mem, int) else 0
 
@@ -180,6 +189,7 @@ def _parse_neuron_ls(output: str) -> List[NeuronDeviceStat]:
             nc_count=nc_count,
             bdf=str(entry["bdf"]) if entry.get("bdf") else None,
             processes=processes,
+            neuroncore_ids=core_ids,
         ))
     return devices
 

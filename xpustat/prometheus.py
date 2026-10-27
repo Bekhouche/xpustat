@@ -87,6 +87,8 @@ def to_prometheus(collection: Any) -> str:
     for vendor in collection.to_dict().keys():
         devices = list(collection[vendor])
         vendor_counts[vendor] = len(devices)
+        # MIG instances are exported as devices of their own, labelled parent/gi.ci.
+        devices = devices + [m for d in devices for m in (getattr(d, "mig_instances", None) or [])]
         for dev in devices:
             base = {"vendor": vendor, "index": dev.index_label, "name": dev.name}
             info = dict(base)
@@ -171,7 +173,7 @@ class _Handler(BaseHTTPRequestHandler):
         return
 
 
-def serve(port: int = 9400, host: str = "0.0.0.0", query=None) -> None:
+def serve(port: int = 9400, host: str = "0.0.0.0", query=None, max_age: float = 0.0) -> None:
     """
     Serve ``/metrics`` forever. Each scrape triggers a fresh ``query_all()``.
 
@@ -180,10 +182,12 @@ def serve(port: int = 9400, host: str = "0.0.0.0", query=None) -> None:
         host:  bind address.
         query: callable returning an ``XPUStatCollection``; defaults to
                :func:`xpustat.query_all`.
+        max_age: with the default query, serve a result up to this many
+               seconds old instead of re-querying on every scrape.
     """
     if query is None:
         from .xpu import query_all
-        query = query_all
+        query = (lambda: query_all(max_age=max_age)) if max_age > 0 else query_all
 
     handler = type("XPUStatHandler", (_Handler,), {"query": staticmethod(query)})
     server = ThreadingHTTPServer((host, port), handler)

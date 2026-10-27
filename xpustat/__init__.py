@@ -46,8 +46,8 @@ __version__ = "0.3.0"
 __version_tuple__ = tuple(int(x) for x in __version__.split("."))
 
 from ._process import ProcessInfo
-from .xpu import AnyDeviceStat, XPUStatCollection, query, query_all
-from .nvidia import NvidiaGPUStat, NvidiaGPUStatCollection
+from .xpu import AnyDeviceStat, XPUStatCollection, query, query_all, register_backend, unregister_backend
+from .nvidia import NvidiaGPUStat, NvidiaGPUStatCollection, MIGInstanceStat
 from .amd import AMDGPUStat, AMDGPUStatCollection
 from .gaudi import GaudiAIPStat, GaudiAIPStatCollection
 from .intel_gpu import IntelGPUStat, IntelGPUStatCollection
@@ -59,8 +59,9 @@ from .apple import AppleGPUStat, AppleGPUStatCollection
 from .neuron import NeuronDeviceStat, NeuronDeviceStatCollection
 from .tpu import TPUChipStat, TPUChipStatCollection
 from .tenstorrent import TenstorrentDeviceStat, TenstorrentDeviceStatCollection
-from ._device import (DeviceMixin, TORCH_DEVICE_TYPE, VISIBLE_DEVICES_ENV,
-                      pick_device, visible_indices, framework_index, torch_device)
+from .jetson import JetsonGPUStat, JetsonGPUStatCollection
+from ._device import (DeviceMixin, TORCH_DEVICE_TYPE, VISIBLE_DEVICES_ENV, RAY_RESOURCE, K8S_RESOURCE,
+                      pick_device, visible_indices, framework_index, torch_device, visible_devices_env)
 from .prometheus import to_prometheus
 
 __all__ = [
@@ -69,6 +70,8 @@ __all__ = [
     # Core API
     "query_all",
     "query",
+    "register_backend",
+    "unregister_backend",
     "XPUStatCollection",
     "AnyDeviceStat",
     # Process info
@@ -76,6 +79,7 @@ __all__ = [
     # Per-vendor stat objects
     "NvidiaGPUStat",
     "NvidiaGPUStatCollection",
+    "MIGInstanceStat",
     "AMDGPUStat",
     "AMDGPUStatCollection",
     "GaudiAIPStat",
@@ -98,14 +102,19 @@ __all__ = [
     "TPUChipStatCollection",
     "TenstorrentDeviceStat",
     "TenstorrentDeviceStatCollection",
+    "JetsonGPUStat",
+    "JetsonGPUStatCollection",
     # Device selection / framework helpers
     "DeviceMixin",
     "TORCH_DEVICE_TYPE",
     "VISIBLE_DEVICES_ENV",
+    "RAY_RESOURCE",
+    "K8S_RESOURCE",
     "pick_device",
     "visible_indices",
     "framework_index",
     "torch_device",
+    "visible_devices_env",
     # Prometheus
     "to_prometheus",
 ]

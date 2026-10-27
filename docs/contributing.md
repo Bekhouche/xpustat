@@ -41,6 +41,17 @@ A backend is one module with two classes and a parser. Use `xpustat/moorethreads
 
 Keep the existing JSON keys and constructor signatures unchanged; new fields are added, not renamed.
 
+## Plugin backends
+
+A vendor can live outside this repository. Expose the collection class as an entry point:
+
+```toml
+[project.entry-points."xpustat.backends"]
+acme = "xpustat_acme:AcmeStatCollection"
+```
+
+or register it at runtime with `xpustat.register_backend("acme", AcmeStatCollection)`. The key must be a lowercase identifier that is not a built-in vendor. The contract is the one in the steps above: `AcmeStatCollection([])` is empty, `AcmeStatCollection.new_query()` never raises, instances support `len()`, iteration, indexing and `to_dict()` with one list under a key of your choice, and each device subclasses `xpustat.DeviceMixin` with `vendor` and `_index_attr` set. Plugins get a generic CLI label (the first six letters of the key, upper case); add the key to `TORCH_DEVICE_TYPE`, `VISIBLE_DEVICES_ENV`, `RAY_RESOURCE` and `K8S_RESOURCE` from your package if the vendor has them. A plugin that fails to import is skipped; set `XPUSTAT_DEBUG=1` to see why.
+
 ## Conventions
 
 - Vendor tools are the source of truth. When a tool does not report a value, the field is `None` or 0 and the documentation says so; the value is not estimated.

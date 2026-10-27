@@ -16,6 +16,19 @@ Status legend: **tested** means run on the named hardware by the authors; **unte
 
 On a seven-GPU host, the two `nvidia-smi` calls take about 154 ms and 97 ms; running them concurrently brought the query from 246 ms to 172 ms. The NVML path took 123 ms on the same host.
 
+On the NVML path, a GPU in MIG mode also lists its compute instances in `mig_instances`, each with its `MIG-` UUID, GPU-instance and compute-instance ids, memory and processes. The `nvidia-smi` path does not list them. This was written from the NVML API and has not been run on a MIG-enabled GPU; the L4 used for testing does not support MIG.
+
+## NVIDIA Jetson
+
+| | |
+|---|---|
+| Key | `jetson` |
+| Status | untested; parsers written from published `tegrastats` lines of Nano, Xavier and Orin |
+| Command | `tegrastats --interval 200`, first line, then stopped |
+| Fields | shared RAM used/total, `util_pct` from `GR3D_FREQ`, `temp_c` from `gpu@..C`, `power_w` from the first of `VDD_GPU_SOC`, `VDD_CPU_GPU_CV`, `POM_5V_GPU`, `GPU` present, recorded in `power_rail` |
+
+The module name is read from `/proc/device-tree/model`. The backend only runs on a host with `/etc/nv_tegra_release` or a Jetson model string, and never when `nvidia-smi` exists, so a GPU is listed once. There is no per-process memory. On Orin Nano the GPU shares its rail with the CPU, so `power_w` is the combined figure and `power_rail` says so.
+
 ## AMD
 
 | | |
@@ -120,6 +133,10 @@ The in-process read takes about 2 ms against 25 ms for `ioreg`; a loop of 5,000 
 | Fields | `device_id`, `device_path`, memory from `memory_used_bytes` and `memory_total_bytes`, `util_pct` from `duty_cycle_pct`, `hbm_bw_util_pct`, one process per chip |
 
 The name is `TPU <type>` using the `accelerator type` line of `tpu-info --version`, or `Cloud TPU` when that line is absent. `tpu-info` needs a running TPU workload to read metrics from `libtpu`; without one, memory and duty cycle read 0.
+
+## Plugin backends
+
+Any package can add a vendor by exposing a collection class through the `xpustat.backends` entry point, or at runtime with `xpustat.register_backend(name, cls)`. The class follows the same contract as the built-ins; see [Contributing](contributing.md#plugin-backends). A plugin vendor appears in `query_all`, `to_dict`, the CLI (with a generic label) and the Prometheus exporter without further wiring.
 
 ## Tenstorrent
 

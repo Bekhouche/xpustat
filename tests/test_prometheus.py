@@ -104,3 +104,15 @@ def test_http_server_reports_query_errors_without_dying():
             assert e.code == 500 and b"vendor tool exploded" in e.read()
     finally:
         server.shutdown(); server.server_close()
+
+
+def test_prometheus_exports_mig_instances_as_devices():
+    from xpustat.nvidia import MIGInstanceStat
+    col = _collection()
+    gpu = col.nvidia[0]
+    gpu.mig_instances = [MIGInstanceStat(parent_index=0, uuid="MIG-1", mem_used_mb=100, mem_total_mb=10240,
+                                         gpu_instance_id=3, compute_instance_id=0, profile="1g.10gb")]
+    lines = to_prometheus(col).splitlines()
+    assert 'xpustat_memory_total_bytes{vendor="nvidia",index="0/3.0",name="MIG 1g.10gb"} 10737418240' in lines
+    assert any('index="0/3.0"' in l and 'uuid="MIG-1"' in l for l in lines if l.startswith("xpustat_device_info"))
+    assert 'xpustat_scrape_devices{vendor="nvidia"} 1' in lines      # parent GPU count unchanged

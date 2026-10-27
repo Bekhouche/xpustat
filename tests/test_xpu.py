@@ -81,3 +81,72 @@ def test_query(monkeypatch):
     
     with pytest.raises(ValueError):
         xpu.query("unknown")
+
+
+# ---------------------------------------------------------------------------
+# 0.4.0: jetson key, plugins, cache
+# ---------------------------------------------------------------------------
+
+from xpustat._device import DeviceMixin
+
+
+class _AcmeDev(DeviceMixin):
+    vendor = "acme"; _index_attr = "idx"
+    def __init__(self, idx, used=1, total=8):
+        self.idx = idx; self.name = f"Acme {idx}"; self.mem_used_mb = used; self.mem_total_mb = total; self.processes = []
+    def to_dict(self):
+        return {"idx": self.idx, "name": self.name, "mem_used_mb": self.mem_used_mb, "mem_total_mb": self.mem_total_mb}
+
+
+class _AcmeCollection:
+    def __init__(self, devs): self.devs = devs
+    def __len__(self): return len(self.devs)
+    def __iter__(self): return iter(self.devs)
+    def __getitem__(self, i): return self.devs[i]
+    def to_dict(self): return {"accelerators": [d.to_dict() for d in self.devs]}
+    @classmethod
+    def new_query(cls): return cls([_AcmeDev(0), _AcmeDev(1, used=7)])
+
+
+def test_to_dict_has_jetson_key():
+    assert create_mock_collection().to_dict()["jetson"] == []
+
+
+def test_register_backend_roundtrip(monkeypatch):
+    import xpustat
+    for name, cls in xpu._BACKENDS:
+        monkeypatch.setattr(cls, "new_query", classmethod(lambda c: c([])))
+    xpustat.register_backend("acme", _AcmeCollection)
+    try:
+        assert "acme" in xpu._BACKENDS_KEYS and xpu._BACKENDS_MAP["acme"] is _AcmeCollection
+        s = xpu.query_all(parallel=False)
+        assert len(s.acme) == 2 and s["acme"][1].name == "Acme 1" and len(s) == 2
+        assert s.to_dict()["acme"][1]["mem_used_mb"] == 7
+        assert "acme=2" in repr(s)
+        assert xpustat.pick_device(stats=s)[0].idx == 0            # most free
+        assert xpustat.query("acme")[0].idx == 0
+        assert "acme" in xpustat.to_prometheus(s)
+        empty = create_mock_collection()                          # no kwarg → empty plugin slot
+        assert len(empty.acme) == 0 and empty.to_dict()["acme"] == []
+        with pytest.raises(ValueError):
+            xpustat.register_backend("nvidia", _AcmeCollection)   # built-in name
+        with pytest.raises(ValueError):
+            xpustat.register_backend("Not-Valid", _AcmeCollection)
+    finally:
+        xpustat.unregister_backend("acme")
+    assert "acme" not in xpu._BACKENDS_KEYS
+    with pytest.raises(TypeError):
+        XPUStatCollection(*[c([]) for _, c in xpu._BACKENDS[:8]], acme=_AcmeCollection([]))
+
+
+def test_query_all_max_age_cache(monkeypatch):
+    for name, cls in xpu._BACKENDS:
+        monkeypatch.setattr(cls, "new_query", classmethod(lambda c: c([])))
+    a = xpu.query_all(parallel=False)
+    b = xpu.query_all(parallel=False, max_age=10)
+    assert b is a
+    c = xpu.query_all(parallel=False)                     # no max_age → fresh
+    assert c is not a
+    monkeypatch.setattr(xpu.time, "monotonic", lambda: xpu._CACHE["time"] + 100)
+    assert xpu.query_all(parallel=False, max_age=10) is not c
+    assert xpu.query_all(parallel=False, vendors=["nvidia"], max_age=10) is not xpu.query_all(parallel=False, max_age=10)
