@@ -194,7 +194,7 @@ Hichem Telli tested some devices and reported the results.
 
 ## Version history
 
-### Unreleased
+### 0.6.0
 - Web UI: `xpustat --ui` serves a browser page (plus `/json`, `/metrics` and `/cluster`) for this machine or for many hosts with `--ssh`, `--hosts` or `--hosts-file`; `--port`, `--host`, `--no-local`; the server polls the hosts on its own timer and keeps the last snapshot of hosts that stop answering
 - Continuous integration: GitHub Actions runs the tests on Ubuntu, macOS and Windows with Python 3.9 and 3.13, builds the sdist and wheel and the docs on every push
 - Prometheus: a textual P-state such as `P2` is exported as 2 and other textual states are skipped instead of raising
