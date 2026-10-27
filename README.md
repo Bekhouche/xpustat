@@ -182,7 +182,7 @@ Hichem Telli tested some devices and reported the results.
 
 ## Version history
 
-### Unreleased
+### 0.5.0
 - Host CPU and memory as an opt-in device: `xpustat --cpu`, `query_all(include_cpu=True)`, `stats.cpu`; the `cpu` JSON key appears only when asked, so existing output is unchanged
 - Per-process compute utilization (`sm_pct`, from NVML or `nvidia-smi pmon`), full command line, host RSS and CPU, and container or job attribution (`docker`, `containerd`, `podman`, Kubernetes pod, SLURM job) on every process
 - NVIDIA and AMD: fan, SM/graphics and memory clocks, encoder/decoder load, ECC counts, P-state or perf level, throttle reasons, PCIe link, power limit and energy (NVML, MI series); `throttled` and `healthy` on every device
