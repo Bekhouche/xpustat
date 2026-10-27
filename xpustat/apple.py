@@ -15,8 +15,9 @@ Each accelerator entry carries a ``PerformanceStatistics`` dictionary with
 
 Apple Silicon uses unified memory: ``mem_total_mb`` is the machine's total
 RAM and ``mem_used_mb`` is the slice currently wired by the GPU driver.
-Temperature, power and per-process attribution are not exposed without
-root, so they are reported as ``None`` / empty.
+GPU temperature and power come from the SMC and IOReport counters read
+in-process (see ``_apple_sensors``), without root. Per-process attribution
+is root-only on macOS and stays empty.
 """
 
 from __future__ import annotations
@@ -49,6 +50,9 @@ class AppleGPUStat(DeviceMixin):
         gpu_cores: Optional[int] = None,
         unified_memory: bool = True,
         processes: Optional[List[ProcessInfo]] = None,
+        temp_c: Optional[int] = None,
+        power_w: Optional[float] = None,
+        ane_power_w: Optional[float] = None,
     ) -> None:
         self.gpu_index = gpu_index
         self.name = name
@@ -62,14 +66,12 @@ class AppleGPUStat(DeviceMixin):
         self.unified_memory = unified_memory
         #: macOS does not expose per-process GPU memory without root.
         self.processes: List[ProcessInfo] = processes or []
-
-    @property
-    def temp_c(self) -> Optional[int]:
-        return None
-
-    @property
-    def power_w(self) -> Optional[float]:
-        return None
+        #: Mean of the SMC GPU sensors (``Tg..`` keys); None when unreadable.
+        self.temp_c = temp_c
+        #: GPU power from the IOReport ``Energy Model`` counters.
+        self.power_w = power_w
+        #: Apple Neural Engine power, same source.
+        self.ane_power_w = ane_power_w
 
     def to_dict(self) -> dict:
         return {
@@ -83,6 +85,7 @@ class AppleGPUStat(DeviceMixin):
             "util_pct": self.util_pct,
             "temp_c": self.temp_c,
             "power_w": self.power_w,
+            "ane_power_w": self.ane_power_w,
             "processes": [p.to_dict() for p in self.processes],
         }
 
@@ -136,9 +139,11 @@ class AppleGPUStatCollection:
 
         entries = _iokit_accelerator_entries()
         if entries is not None:
-            return cls(_parse_entries(entries, _system_memory_bytes()), backend="iokit")
-
-        return cls._query_subprocess()
+            col = cls(_parse_entries(entries, _system_memory_bytes(), _system_memory_available_bytes()), backend="iokit")
+        else:
+            col = cls._query_subprocess()
+        _attach_sensors(col)
+        return col
 
     @classmethod
     def _query_subprocess(cls) -> "AppleGPUStatCollection":
@@ -157,7 +162,28 @@ class AppleGPUStatCollection:
         if result.returncode != 0 or not result.stdout.strip():
             return cls([])
 
-        return cls(_parse_ioreg(result.stdout, _system_memory_bytes()), backend="subprocess")
+        return cls(_parse_ioreg(result.stdout, _system_memory_bytes(), _system_memory_available_bytes()), backend="subprocess")
+
+
+def _attach_sensors(col: "AppleGPUStatCollection") -> None:
+    """Fill temperature and power on unified-memory (Apple Silicon) GPUs from the in-process sensors."""
+    if not col.gpus or not any(g.unified_memory for g in col.gpus):
+        return
+    try:
+        from . import _apple_sensors
+        watts = _apple_sensors.energy_watts()
+        temps = _apple_sensors.temperatures()
+    except Exception:
+        return
+    for g in col.gpus:
+        if not g.unified_memory:
+            continue
+        if temps.get("gpu") is not None:
+            g.temp_c = int(round(temps["gpu"]))
+        if "gpu" in watts:
+            g.power_w = watts["gpu"]
+        if "ane" in watts:
+            g.ane_power_w = watts["ane"]
 
 
 # ---------------------------------------------------------------------------
@@ -274,13 +300,23 @@ def _system_memory_bytes() -> int:
         return 0
 
 
+def _system_memory_available_bytes() -> Optional[int]:
+    """Memory the OS can still hand to the GPU on a unified-memory machine."""
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        return None
+
+
 def _to_str(value: Any) -> str:
     if isinstance(value, bytes):
         return value.rstrip(b"\x00").decode("utf-8", "replace")
     return str(value)
 
 
-def _parse_ioreg(plist_bytes: bytes, system_memory_bytes: int = 0) -> List[AppleGPUStat]:
+def _parse_ioreg(plist_bytes: bytes, system_memory_bytes: int = 0,
+                 system_memory_available_bytes: Optional[int] = None) -> List[AppleGPUStat]:
     """Parse the plist produced by ``ioreg -r -c IOAccelerator -a -d 1``."""
     try:
         entries = plistlib.loads(plist_bytes)
@@ -288,10 +324,11 @@ def _parse_ioreg(plist_bytes: bytes, system_memory_bytes: int = 0) -> List[Apple
         return []
     if not isinstance(entries, list):
         return []
-    return _parse_entries(entries, system_memory_bytes)
+    return _parse_entries(entries, system_memory_bytes, system_memory_available_bytes)
 
 
-def _parse_entries(entries: List[Any], system_memory_bytes: int = 0) -> List[AppleGPUStat]:
+def _parse_entries(entries: List[Any], system_memory_bytes: int = 0,
+                   system_memory_available_bytes: Optional[int] = None) -> List[AppleGPUStat]:
     """
     Build stat objects from ``IOAccelerator`` property dicts.
 
@@ -328,7 +365,7 @@ def _parse_entries(entries: List[Any], system_memory_bytes: int = 0) -> List[App
             mem_total_mb = system_memory_bytes // _MIB
             unified = True
 
-        gpus.append(AppleGPUStat(
+        stat = AppleGPUStat(
             gpu_index=len(gpus),
             name=name,
             mem_used_mb=mem_used_mb,
@@ -336,7 +373,10 @@ def _parse_entries(entries: List[Any], system_memory_bytes: int = 0) -> List[App
             util_pct=util_pct,
             gpu_cores=gpu_cores,
             unified_memory=unified,
-        ))
+        )
+        if unified and system_memory_available_bytes is not None:
+            stat._mem_free_mb = system_memory_available_bytes // _MIB
+        gpus.append(stat)
     return gpus
 
 

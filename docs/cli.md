@@ -3,8 +3,11 @@
 ```
 xpustat [-h] [-u] [-p] [-c] [-a] [-e] [-t] [-P] [-A] [-i [INTERVAL]] [-n N]
         [-f VENDOR [VENDOR ...]] [--no-header] [--no-color]
-        [--json] [--prometheus] [--select N] [--by RANKING] [--min-free MB] [--uuid]
-        [--serve-prometheus PORT] [--cache-ttl SECS] [--version]
+        [-F] [-C] [-E] [-H] [-k] [--full-cmd] [--id IDS] [--print-completion SHELL]
+        [--cpu] [--json] [--prometheus] [--select N] [--by RANKING] [--min-free MB] [--uuid]
+        [--serve-prometheus PORT] [--cache-ttl SECS] [--doctor]
+        [--hosts URL ...] [--ssh HOST ...] [--ssh-command CMD] [--timeout SECS]
+        [--record FILE] [--replay FILE] [--version]
 ```
 
 Without flags, `xpustat` prints one line per device with the memory bar and exits.
@@ -28,7 +31,9 @@ The line above was produced with `-a`. From left to right: the vendor tag, the d
 | `-u`, `--show-user` | process owner |
 | `-p`, `--show-pid` | process PID |
 | `-c`, `--show-cmd` | process command name |
-| `-a`, `--show-all` | all of the above plus `-e -t -P -A` |
+| `-k`, `--show-container` | prefix each process with its container or job: `docker:<id>`, `containerd:<id>`, `podman:<id>`, `pod:<uid>`, `slurm:<jobid>` |
+| `--full-cmd` | show the full command line instead of the executable name (with `-c`); truncated at 80 characters |
+| `-a`, `--show-all` | every column: `-u -p -c -k -e -t -P -A -F -C -E -H` |
 
 ### Hardware columns
 
@@ -37,7 +42,13 @@ The line above was produced with `-a`. From left to right: the vendor tag, the d
 | `-e`, `--show-util` | compute utilization in percent |
 | `-t`, `--show-temp` | temperature in degrees Celsius |
 | `-P`, `--show-power` | power draw in watts |
-| `-A`, `--show-arch` | architecture tag: `cc8.9` for CUDA compute capability, `gfx1201` for the ROCm target, `10-core` for Apple and Neuron core counts |
+| `-A`, `--show-arch` | architecture tag: `cc8.9` for CUDA compute capability, `gfx1201` for the ROCm target, `10-core` for Apple and Neuron core counts, `4P+6E` or `16c/32t` for the CPU row |
+| `-F`, `--show-fan` | fan speed in percent, or rpm when only that is reported |
+| `-C`, `--show-clocks` | SM or graphics clock and memory clock, MHz |
+| `-E`, `--show-codec` | video encoder and decoder utilization |
+| `-H`, `--show-health` | NVIDIA P-state (`P0` busy to `P8` idle) or AMD perf level, active throttle reasons (`power`, `thermal`, `HW`, ...), and the uncorrected ECC count, red when non-zero |
+
+Process entries read `user:command/pid(memory, sm%)`: the trailing percentage is the process's own compute utilization when the driver reports it (NVIDIA, from NVML samples or `nvidia-smi pmon`).
 
 A column shows `N/A` when the vendor tool does not report the value. Temperature and power are `N/A` on Apple Silicon, since macOS exposes them to root only.
 
@@ -54,7 +65,9 @@ On a terminal, watch mode draws on the alternate screen and redraws each frame i
 
 | Flag | Effect |
 |---|---|
-| `-f VENDOR ...`, `--filter` | show only these vendors; keys: `nvidia amd gaudi intel huawei hygon cambricon moorethreads apple neuron tpu tenstorrent jetson` plus any registered plugin |
+| `--id IDS` | show only devices with these physical indices, e.g. `--id 0,2`; combine with `-f` |
+| `-f VENDOR ...`, `--filter` | show only these vendors; keys: `nvidia amd gaudi intel huawei hygon cambricon moorethreads apple neuron tpu tenstorrent jetson rebellions furiosa cpu` plus any registered plugin |
+| `--cpu` | also show the host CPU and memory: one `[CPU]` row with RAM as the memory bar, CPU utilization, temperature and power where readable, a detail line (cores and threads, frequency, load average, available memory, swap, cgroup limits), and the top processes by resident memory under `-u`, `-p`, `-c`. Applies to `--json`, `--prometheus` and `--serve-prometheus` as well. `-f cpu` implies it. |
 | `--no-header` | omit the hostname and time line |
 | `--no-color` | plain text; colour is also disabled automatically when stdout is not a terminal |
 
@@ -66,6 +79,7 @@ On a terminal, watch mode draws on the alternate screen and redraws each frame i
 | `--prometheus` | the Prometheus text format, once |
 | `--serve-prometheus PORT` | serve `/metrics` on `0.0.0.0:PORT` until interrupted, see [Prometheus](prometheus.md) |
 | `--cache-ttl SECS` | with `--serve-prometheus`: reuse a result up to SECS old between scrapes |
+| `--print-completion SHELL` | print a completion script for `bash`, `zsh` or `fish`: `eval "$(xpustat --print-completion bash)"` |
 | `--version` | print the version |
 
 ### Device selection
@@ -86,12 +100,44 @@ export $(xpustat --select 1 -f nvidia --by util --uuid)
 
 Devices already hidden by the variable are never picked. The command exits 1 when nothing matches, or when the picked devices belong to a vendor without such a variable (Apple).
 
+### Diagnostics
+
+`xpustat --doctor` prints one block per backend: the executables looked for and where they were found, what a version probe answered, whether the native binding imports (and why not), the visible-devices variables set, how many devices `new_query()` returned, how long it took, and any error. `--doctor --json` gives the same as data. On Linux it also says whether the RAPL energy counter is readable.
+
+### Several machines
+
+```bash
+xpustat --hosts http://node1:9400 http://node2:9400      # exporters started with --serve-prometheus
+xpustat --ssh node1 node2 -a                              # runs `xpustat --json` there over ssh
+xpustat --ssh node3 --ssh-command 'cd ~/xpustat && PYTHONPATH=. python3 -m xpustat.cli --json'
+```
+
+| Flag | Effect |
+|---|---|
+| `--hosts URL ...` | read each exporter's `/json` endpoint |
+| `--ssh HOST ...` | run xpustat over `ssh -o BatchMode=yes` on each host |
+| `--ssh-command CMD` | the command to run instead of `xpustat --json` |
+| `--timeout SECS` | per-host timeout, default 10 |
+
+The table gets a host column; a host that does not answer shows `unreachable: <reason>` and the others still render. `--json` prints one object per host with `host`, `hostname`, `query_time`, `error` and `devices`; `-i` refreshes.
+
+### Record and replay
+
+```bash
+xpustat --record run.ndjson.gz -i 1 -n 60    # one frame per second for a minute
+xpustat --replay run.ndjson.gz -i 0.2 -e     # play it back five frames a second
+xpustat --replay run.ndjson.gz --json        # the frames as a JSON list
+```
+
+Each frame is `to_json(metadata=True)` on one line; a `.gz` suffix compresses. Replay uses the same column flags as a live view.
+
 ## Examples
 
 ```bash
 xpustat                      # snapshot
 xpustat -a                   # everything
 xpustat -pui                 # processes with PIDs and users, refreshing every second
+xpustat -pui --cpu           # the same, plus the host CPU and memory
 xpustat -i 2 -n 10           # ten refreshes, two seconds apart
 xpustat -f nvidia amd        # only NVIDIA and AMD
 xpustat -A                   # architecture column

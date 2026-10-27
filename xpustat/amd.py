@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
 from ._device import DeviceMixin
-from ._process import ProcessInfo, enrich_process
+from ._process import ProcessInfo, enrich_process, enrich_full
 
 # ---------------------------------------------------------------------------
 # Optional fast-path: amdsmi (Python bindings shipped with ROCm)
@@ -15,7 +15,7 @@ from ._process import ProcessInfo, enrich_process
 try:
     import amdsmi as _amdsmi  # type: ignore[import-untyped]
     _HAS_AMDSMI = True
-except ImportError:
+except Exception:  # ImportError, or a binding that fails against the installed driver library
     _HAS_AMDSMI = False
 
 
@@ -36,6 +36,23 @@ class AMDGPUStat(DeviceMixin):
         power_w: Optional[float] = None,
         gfx_target: Optional[str] = None,
         processes: Optional[List[ProcessInfo]] = None,
+        fan_pct: Optional[int] = None,
+        fan_rpm: Optional[int] = None,
+        clock_gfx_mhz: Optional[int] = None,
+        clock_max_gfx_mhz: Optional[int] = None,
+        clock_mem_mhz: Optional[int] = None,
+        mem_util_pct: Optional[int] = None,
+        temp_hotspot_c: Optional[int] = None,
+        temp_mem_c: Optional[int] = None,
+        ecc_uncorrected: Optional[int] = None,
+        ecc_corrected: Optional[int] = None,
+        throttled: Optional[bool] = None,
+        perf_level: Optional[str] = None,
+        power_limit_w: Optional[float] = None,
+        energy_j: Optional[float] = None,
+        pcie_gen: Optional[int] = None,
+        pcie_width: Optional[int] = None,
+        bdf: Optional[str] = None,
     ) -> None:
         self.gpu_index = gpu_index
         self.name = name
@@ -47,6 +64,34 @@ class AMDGPUStat(DeviceMixin):
         #: ROCm GFX target, e.g. ``"gfx1100"`` (RDNA3) or ``"gfx942"`` (MI300X).
         self.gfx_target = gfx_target
         self.processes: List[ProcessInfo] = processes or []
+        self.fan_pct = fan_pct
+        self.fan_rpm = fan_rpm
+        self.clock_gfx_mhz = clock_gfx_mhz
+        self.clock_max_gfx_mhz = clock_max_gfx_mhz
+        self.clock_mem_mhz = clock_mem_mhz
+        #: Memory-controller activity, percent (``umc_activity``).
+        self.mem_util_pct = mem_util_pct
+        self.temp_hotspot_c = temp_hotspot_c
+        self.temp_mem_c = temp_mem_c
+        self.ecc_uncorrected = ecc_uncorrected
+        self.ecc_corrected = ecc_corrected
+        #: ``power.throttle_status == "THROTTLED"``; ``None`` when not reported.
+        self.throttled = throttled
+        #: e.g. ``"auto"`` from ``AMDSMI_DEV_PERF_LEVEL_AUTO``.
+        self.perf_level = perf_level
+        self.power_limit_w = power_limit_w
+        #: Energy counter in joules when the card reports one (MI series).
+        self.energy_j = energy_j
+        self.pcie_gen = pcie_gen
+        self.pcie_width = pcie_width
+        self.bdf = bdf
+
+    @property
+    def healthy(self) -> Optional[bool]:
+        """False on uncorrected ECC errors; ``None`` when ECC is not reported."""
+        if self.ecc_uncorrected is None:
+            return None
+        return self.ecc_uncorrected == 0
 
     def to_dict(self) -> dict:
         return {
@@ -59,7 +104,25 @@ class AMDGPUStat(DeviceMixin):
             "util_pct": self.util_pct,
             "temp_c": self.temp_c,
             "power_w": self.power_w,
+            "power_limit_w": self.power_limit_w,
             "processes": [p.to_dict() for p in self.processes],
+            "fan_pct": self.fan_pct,
+            "fan_rpm": self.fan_rpm,
+            "clock_gfx_mhz": self.clock_gfx_mhz,
+            "clock_max_gfx_mhz": self.clock_max_gfx_mhz,
+            "clock_mem_mhz": self.clock_mem_mhz,
+            "mem_util_pct": self.mem_util_pct,
+            "temp_hotspot_c": self.temp_hotspot_c,
+            "temp_mem_c": self.temp_mem_c,
+            "ecc_uncorrected": self.ecc_uncorrected,
+            "ecc_corrected": self.ecc_corrected,
+            "throttled": self.throttled,
+            "healthy": self.healthy,
+            "perf_level": self.perf_level,
+            "energy_j": self.energy_j,
+            "pcie_gen": self.pcie_gen,
+            "pcie_width": self.pcie_width,
+            "bdf": self.bdf,
         }
 
     def __repr__(self) -> str:
@@ -205,17 +268,11 @@ class AMDGPUStatCollection:
                             continue
                         mem_val = p.get("memory_usage", {}).get("vram_mem", 0)
                         gpu_mem_mb = int(mem_val) // (1024 * 1024) if mem_val else None
-                        username, command = enrich_process(pid, "")
-                        processes.append(
-                            ProcessInfo(
-                                pid=pid,
-                                username=username,
-                                command=command,
-                                gpu_mem_mb=gpu_mem_mb,
-                            )
-                        )
+                        processes.append(enrich_full(pid, "", gpu_mem_mb=gpu_mem_mb))
                 except Exception:
                     pass
+
+                extra = _extra_fields_amdsmi(handle)
 
                 gpus.append(
                     AMDGPUStat(
@@ -228,6 +285,7 @@ class AMDGPUStatCollection:
                         temp_c=temp_c,
                         power_w=power_w,
                         processes=processes,
+                        **extra,
                     )
                 )
 
@@ -315,15 +373,7 @@ class AMDGPUStatCollection:
                 vram_mem = _section(_section(p, "memory_usage"), "vram_mem").get("value", 0)
                 mem_mb = int(vram_mem) // (1024 * 1024) if vram_mem else None
                 cmd = p.get("name", "")
-                username, command = enrich_process(pid, cmd)
-                processes.append(
-                    ProcessInfo(
-                        pid=pid,
-                        username=username,
-                        command=command,
-                        gpu_mem_mb=mem_mb,
-                    )
-                )
+                processes.append(enrich_full(pid, cmd if cmd != "N/A" else "", gpu_mem_mb=mem_mb))
 
             gpus.append(AMDGPUStat(
                 gpu_index=idx,
@@ -335,6 +385,7 @@ class AMDGPUStatCollection:
                 temp_c=_int(temp.get("edge") or temp.get("hotspot")),
                 power_w=_float(pwr.get("socket_power")),
                 processes=processes,
+                **_extra_fields_json(static, metric),
             ))
 
         return cls(gpus, backend="subprocess")
@@ -343,6 +394,110 @@ class AMDGPUStatCollection:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _extra_fields_json(static: dict, metric: dict) -> dict:
+    """Fan, clocks, ECC, throttle state, PCIe, power limit and energy from amd-smi JSON."""
+    fan = _section(metric, "fan")
+    clock = _section(metric, "clock")
+    gfx = _section(clock, "gfx_0")
+    memclk = _section(clock, "mem_0")
+    usage = _section(metric, "usage")
+    temp = _section(metric, "temperature")
+    ecc = _section(metric, "ecc")
+    pwr = _section(metric, "power")
+    pcie = _section(metric, "pcie")
+    energy = _section(metric, "energy")
+    bus = _section(static, "bus")
+    limit = _section(_section(static, "limit"), "ppt0")
+
+    throttle = pwr.get("throttle_status")
+    throttled = None
+    if isinstance(throttle, str) and throttle.upper() in ("THROTTLED", "UNTHROTTLED"):
+        throttled = throttle.upper() == "THROTTLED"
+    perf = metric.get("perf_level")
+    perf_level = perf.replace("AMDSMI_DEV_PERF_LEVEL_", "").lower() if isinstance(perf, str) else None
+    gen = None
+    ver = bus.get("pcie_interface_version")
+    if isinstance(ver, str) and ver.lower().startswith("gen"):
+        try:
+            gen = int(ver.split()[-1])
+        except ValueError:
+            pass
+    ecc_u = ecc.get("total_uncorrectable_count")
+    ecc_c = ecc.get("total_correctable_count")
+    return dict(
+        fan_pct=_int(fan.get("usage")),
+        fan_rpm=fan.get("rpm") if isinstance(fan.get("rpm"), int) else None,
+        clock_gfx_mhz=_int(gfx.get("clk")),
+        clock_max_gfx_mhz=_int(gfx.get("max_clk")),
+        clock_mem_mhz=_int(memclk.get("clk")),
+        mem_util_pct=_int(usage.get("umc_activity")),
+        temp_hotspot_c=_int(temp.get("hotspot")),
+        temp_mem_c=_int(temp.get("mem")),
+        ecc_uncorrected=ecc_u if isinstance(ecc_u, int) else None,
+        ecc_corrected=ecc_c if isinstance(ecc_c, int) else None,
+        throttled=throttled,
+        perf_level=perf_level,
+        power_limit_w=_float(limit.get("socket_power_limit")),
+        energy_j=_float(energy.get("total_energy_consumption")),
+        pcie_gen=gen,
+        pcie_width=pcie.get("width") if isinstance(pcie.get("width"), int) else None,
+        bdf=bus.get("bdf") if isinstance(bus.get("bdf"), str) else None,
+    )
+
+
+def _amdsmi_try(fn, default=None):
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def _extra_fields_amdsmi(handle) -> dict:
+    """The extended fields through the amdsmi bindings; every call is optional."""
+    a = _amdsmi
+    out: dict = {}
+    clk = _amdsmi_try(lambda: a.amdsmi_get_clock_info(handle, a.AmdSmiClkType.GFX)) or {}
+    mclk = _amdsmi_try(lambda: a.amdsmi_get_clock_info(handle, a.AmdSmiClkType.MEM)) or {}
+    ecc = _amdsmi_try(lambda: a.amdsmi_get_gpu_total_ecc_count(handle)) or {}
+    act = _amdsmi_try(lambda: a.amdsmi_get_gpu_activity(handle)) or {}
+    cap = _amdsmi_try(lambda: a.amdsmi_get_power_cap_info(handle)) or {}
+    out["clock_gfx_mhz"] = _int_or_none(clk.get("clk"))
+    out["clock_max_gfx_mhz"] = _int_or_none(clk.get("max_clk"))
+    out["clock_mem_mhz"] = _int_or_none(mclk.get("clk"))
+    out["ecc_uncorrected"] = _int_or_none(ecc.get("uncorrectable_count"))
+    out["ecc_corrected"] = _int_or_none(ecc.get("correctable_count"))
+    out["mem_util_pct"] = _int_or_none(act.get("umc_activity"))
+    out["temp_hotspot_c"] = _amdsmi_try(lambda: int(a.amdsmi_get_temp_metric(
+        handle, a.AmdSmiTemperatureType.HOTSPOT, a.AmdSmiTemperatureMetric.CURRENT)))
+    out["temp_mem_c"] = _amdsmi_try(lambda: int(a.amdsmi_get_temp_metric(
+        handle, a.AmdSmiTemperatureType.VRAM, a.AmdSmiTemperatureMetric.CURRENT)))
+    fan = _amdsmi_try(lambda: a.amdsmi_get_gpu_fan_speed(handle, 0))
+    out["fan_rpm"] = int(fan) if isinstance(fan, int) else None
+    power_cap = cap.get("power_cap")
+    out["power_limit_w"] = round(power_cap / 1e6, 1) if isinstance(power_cap, (int, float)) and power_cap > 1000 else _float_or_none(power_cap)
+    energy = _amdsmi_try(lambda: a.amdsmi_get_energy_count(handle)) or {}
+    e = energy.get("energy_accumulator") if isinstance(energy, dict) else None
+    res = energy.get("counter_resolution") if isinstance(energy, dict) else None
+    out["energy_j"] = round(e * res / 1e6, 1) if isinstance(e, (int, float)) and isinstance(res, (int, float)) else None
+    bdf = _amdsmi_try(lambda: a.amdsmi_get_gpu_device_bdf(handle))
+    out["bdf"] = bdf if isinstance(bdf, str) else None
+    return {k: v for k, v in out.items()}
+
+
+def _int_or_none(v) -> Optional[int]:
+    try:
+        return int(v) if v is not None and v != "N/A" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(v) -> Optional[float]:
+    try:
+        return float(v) if v is not None and v != "N/A" else None
+    except (TypeError, ValueError):
+        return None
+
 
 def _section(data: dict, key: str) -> dict:
     """Return ``data[key]`` if it is a dict; amd-smi emits ``"N/A"`` for

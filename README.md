@@ -1,7 +1,7 @@
 # xpustat
 
 [![GitHub](https://img.shields.io/badge/GitHub-Bekhouche%2Fxpustat-blue?logo=github)](https://github.com/Bekhouche/xpustat)
-**Authors:** Salah Eddine Bekhouche, Hichem Telli
+**Author:** Salah Eddine Bekhouche
 
 A unified accelerator stat tool: `gpustat`, but for every vendor.
 
@@ -22,6 +22,8 @@ A unified accelerator stat tool: `gpustat`, but for every vendor.
 | 🔲 Untested | Google | Cloud TPU (v4 – v6e) | `tpu-info` | `tpu` |
 | 🔲 Untested | Tenstorrent | Wormhole / Blackhole | `tt-smi` | `tenstorrent` |
 | 🔲 Untested | NVIDIA | Jetson Nano / Xavier / Orin | `tegrastats` | `jetson` |
+| 🔲 Untested | Rebellions | ATOM / REBEL | `rbln-stat --json` | `rebellions` |
+| 🔲 Untested | FuriosaAI | RNGD / Warboy | `furiosa-smi` | `furiosa` |
 
 > **Legend:** ✅ tested on real hardware; 🔲 implemented, awaiting a hardware test
 >
@@ -29,8 +31,8 @@ A unified accelerator stat tool: `gpustat`, but for every vendor.
 >
 > **Apple Silicon note:** the GPU shares unified memory with the CPU, so `mem_total_mb` is the
 > machine's total RAM and `mem_used_mb` is the slice currently held by the GPU driver.
-> macOS exposes GPU temperature, power, and per-process usage only to root (`powermetrics`),
-> so those columns show `N/A` on Macs. Discrete GPUs in Intel Macs report real VRAM.
+> GPU temperature and power are read in-process from the SMC and IOReport counters, no sudo needed;
+> per-process GPU usage stays root-only on macOS. Discrete GPUs in Intel Macs report real VRAM.
 >
 > **Plugins:** any package can add a vendor through the `xpustat.backends` entry point, or at runtime with `xpustat.register_backend()`; see [docs/contributing.md](docs/contributing.md).
 >
@@ -71,13 +73,21 @@ conda install -c conda-forge xpustat
 ```
 xpustat                      # coloured table of all detected devices
 xpustat -pui                 # watch mode, showing processes (-p), users (-u), refreshing every 1.0s (-i)
+xpustat -pui --cpu           # same, plus the host CPU and memory (opt-in; also for --json and --prometheus)
 xpustat -i 2                 # watch mode, refresh every 2 seconds
 xpustat -i 1 -n 10           # 10 refreshes then exit
-xpustat -a                   # show everything (util, temp, power, arch, user, pid, cmd)
+xpustat -a                   # every column: util, temp, power, arch, fan, clocks, codec, health, user, pid, cmd, container
+xpustat -H -C -F             # health (P-state, throttling, ECC), clocks, fan
+xpustat -puck --full-cmd     # processes with container/job and full command line
+xpustat --id 0,2 -f nvidia   # only GPUs 0 and 2
 xpustat -f nvidia amd        # show only NVIDIA and AMD
 xpustat --no-color           # plain text, no ANSI codes
 xpustat --json               # raw JSON output
 export $(xpustat --select 2) # restrict a job to the 2 freest devices (CUDA_VISIBLE_DEVICES=..., HIP_..., ...)
+xpustat --doctor             # why is a vendor missing? tools, bindings, env vars, errors
+xpustat --hosts http://n1:9400 http://n2:9400   # cluster view over the exporters' /json
+xpustat --ssh n1 n2 -a       # agentless cluster view over ssh
+xpustat --record run.ndjson.gz -i 1 -n 60; xpustat --replay run.ndjson.gz -i 0.2
 xpustat --prometheus         # Prometheus text format, once
 xpustat --serve-prometheus 9400   # serve http://0.0.0.0:9400/metrics (fresh query per scrape)
 xpustat --version
@@ -123,6 +133,10 @@ print(json.dumps(stats.to_dict(), indent=2))
 # Query a single vendor
 from xpustat import NvidiaGPUStatCollection
 gpus = NvidiaGPUStatCollection.new_query()
+
+# Host CPU and memory, on request (cores, frequency, load, RAM, swap, cgroup limits, top processes)
+cpu = xpustat.query_all(include_cpu=True).cpu[0]
+print(cpu.name, cpu.core_layout or cpu.cores_logical, cpu.mem_free_mb)
 ```
 
 ### Picking a device for training / inference
@@ -162,7 +176,27 @@ Exposes `xpustat_memory_{used,total,free}_bytes`, `xpustat_utilization_percent`,
 `xpustat_device_info` (with `arch` and `torch_device` labels) for every vendor from one process.
 `xpustat.to_prometheus(stats)` returns the same text for embedding in your own exporter.
 
+## Acknowledgements
+
+Hichem Telli tested some devices and reported the results.
+
 ## Version history
+
+### Unreleased
+- Host CPU and memory as an opt-in device: `xpustat --cpu`, `query_all(include_cpu=True)`, `stats.cpu`; the `cpu` JSON key appears only when asked, so existing output is unchanged
+- Per-process compute utilization (`sm_pct`, from NVML or `nvidia-smi pmon`), full command line, host RSS and CPU, and container or job attribution (`docker`, `containerd`, `podman`, Kubernetes pod, SLURM job) on every process
+- NVIDIA and AMD: fan, SM/graphics and memory clocks, encoder/decoder load, ECC counts, P-state or perf level, throttle reasons, PCIe link, power limit and energy (NVML, MI series); `throttled` and `healthy` on every device
+- New columns `-F` fan, `-C` clocks, `-E` codec, `-H` health, `-k` container, plus `--full-cmd`, `--id 0,2` and `--print-completion bash|zsh|fish`
+- MIG inventory on the `nvidia-smi` path from `nvidia-smi -L`; Jetson engines (NVENC, NVDEC, DLA, ...) and the `nvpmodel` power mode
+- Prometheus: fan, clocks, codec, ECC, throttled, healthy, P-state, energy, per-process SM and RSS, `container` label
+- The optional `amdsmi` and `nvidia-ml-py` bindings are skipped when they fail to load against the installed driver, instead of breaking `import xpustat`
+- New backends: Rebellions (`rbln-stat --json`) and FuriosaAI (`furiosa-smi info/status/ps`), with `RBLN_DEVICES` and `FURIOSA_DEVICES` honoured; written from the tools' JSON schemas, awaiting a hardware run
+- Sole author: Salah Eddine Bekhouche; Hichem Telli is acknowledged for testing the Ascend backend
+- Apple Silicon GPU temperature, GPU power and ANE power without sudo (SMC and IOReport, in-process); the CPU row gets temperature and power on macOS too
+- `xpustat --doctor` explains every backend: tool path, probe answer, native binding, env vars, device count, errors
+- Cluster view: `--hosts` reads other exporters' new `/json` endpoint, `--ssh` runs xpustat over ssh; both render one table with a host column and support `--json` and `-i`
+- `--record FILE` writes one JSON frame per line (gzip optional); `--replay FILE` renders a recording
+- Windows: verified natively on Windows 11 (CPU row, JSON, doctor); the CPU model comes from the registry and the console is switched to UTF-8 for the table glyphs
 
 ### 0.4.0
 - NVIDIA Jetson backend (`jetson`) via `tegrastats`; MIG instances on the NVML path (`gpu.mig_instances`)

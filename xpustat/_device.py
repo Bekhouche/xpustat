@@ -44,6 +44,8 @@ TORCH_DEVICE_TYPE: Dict[str, Optional[str]] = {
     "neuron":       "xla",    # torch_neuronx
     "tpu":          "xla",    # torch_xla
     "tenstorrent":  None,     # no PyTorch device type (tt-metal / ttnn)
+    "rebellions":   None,     # optimum-rbln compiles ahead of time; no torch device
+    "furiosa":      None,     # furiosa-sdk runtime; no torch device
 }
 
 #: Environment variables that restrict which physical devices the framework
@@ -62,6 +64,8 @@ VISIBLE_DEVICES_ENV: Dict[str, Sequence[str]] = {
     "tpu":          ("TPU_VISIBLE_CHIPS",),
     "tenstorrent":  ("TT_VISIBLE_DEVICES",),
     "neuron":       ("NEURON_RT_VISIBLE_CORES",),   # NeuronCore ids, not device ids
+    "rebellions":   ("RBLN_DEVICES",),
+    "furiosa":      ("FURIOSA_DEVICES",),            # npu:<id> tokens are accepted
     "apple":        (),
 }
 
@@ -79,6 +83,8 @@ RAY_RESOURCE: Dict[str, Optional[str]] = {
     "tpu":          "TPU",
     "neuron":       "neuron_cores",
     "tenstorrent":  "TTNPU",
+    "rebellions":   "RBLN",
+    "furiosa":      "FURIOSA",
     "cambricon":    None,
     "moorethreads": None,
 }
@@ -99,6 +105,8 @@ K8S_RESOURCE: Dict[str, Optional[str]] = {
     "moorethreads": None,
     "tpu":          None,
     "tenstorrent":  None,
+    "rebellions":   None,
+    "furiosa":      None,
 }
 
 
@@ -117,6 +125,8 @@ def _parse_id_list(raw: str, uuids: Optional[Mapping[str, int]] = None) -> List[
         item = item.strip()
         if not item:
             continue
+        if ":" in item and item.split(":", 1)[0].isalpha():
+            item = item.split(":", 1)[1]
         head = item.split(".", 1)[0]
         if "-" in head and not head.startswith("-") and all(p.isdigit() for p in head.split("-", 1)):
             lo, hi = (int(p) for p in head.split("-", 1))

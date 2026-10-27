@@ -37,6 +37,9 @@ _GPU_TEMP = re.compile(r"\b(?:gpu|GPU)@([\d.]+)C")
 _POWER_RAILS = ("VDD_GPU_SOC", "VDD_CPU_GPU_CV", "POM_5V_GPU", "GPU")
 _POWER = {rail: re.compile(rf"\b{rail}\s+(\d+)(?:mW)?/(\d+)") for rail in _POWER_RAILS}
 
+# Engines tegrastats prints when present: "NVENC 1075" (MHz, or "off"), "DLA0_CORE 0%@..."
+_ENGINE_FREQ = re.compile(r"\b(NVENC|NVDEC|NVJPG|NVJPG1|OFA|SE|APE)\s+(\d+|off)\b")
+_ENGINE_PCT = re.compile(r"\b(DLA\d_CORE|DLA\d_FALCON|PVA\d_VPS|PVA\d_AXI|PVA\d_CORE|VIC_FREQ|EMC_FREQ)\s+(\d+)%")
 _MODEL_PATH = "/proc/device-tree/model"
 _TEGRA_RELEASE = "/etc/nv_tegra_release"
 
@@ -58,6 +61,8 @@ class JetsonGPUStat(DeviceMixin):
         power_w: Optional[float] = None,
         power_rail: Optional[str] = None,
         processes: Optional[List[ProcessInfo]] = None,
+        engines: Optional[dict] = None,
+        power_mode: Optional[str] = None,
     ) -> None:
         self.gpu_index = gpu_index
         self.name = name
@@ -71,6 +76,11 @@ class JetsonGPUStat(DeviceMixin):
         self.power_rail = power_rail
         #: tegrastats reports no per-process GPU memory.
         self.processes: List[ProcessInfo] = processes or []
+        #: Other engines on the module, e.g. ``{"NVENC": "off", "NVDEC": 1075, "DLA0_CORE": 0, "EMC_FREQ": 3}``:
+        #: a frequency in MHz, ``"off"``, or a load percent for the ``_CORE`` / ``_FREQ`` entries.
+        self.engines: dict = dict(engines or {})
+        #: ``nvpmodel`` power mode name, e.g. ``MAXN`` or ``15W``.
+        self.power_mode = power_mode
 
     def to_dict(self) -> dict:
         return {
@@ -84,6 +94,8 @@ class JetsonGPUStat(DeviceMixin):
             "temp_c": self.temp_c,
             "power_w": self.power_w,
             "power_rail": self.power_rail,
+            "engines": self.engines,
+            "power_mode": self.power_mode,
             "processes": [p.to_dict() for p in self.processes],
         }
 
@@ -139,6 +151,8 @@ class JetsonGPUStatCollection:
         if not line:
             return cls([])
         stat = _parse_tegrastats(line, _read_model() or "NVIDIA Jetson")
+        if stat:
+            stat.power_mode = _nvpmodel_mode()
         return cls([stat] if stat else [])
 
 
@@ -210,10 +224,31 @@ def _parse_tegrastats(line: str, name: str = "NVIDIA Jetson") -> Optional[Jetson
             rail = r
             break
 
+    engines: dict = {}
+    for m in _ENGINE_FREQ.finditer(line):
+        engines[m.group(1)] = "off" if m.group(2) == "off" else int(m.group(2))
+    for m in _ENGINE_PCT.finditer(line):
+        engines[m.group(1)] = int(m.group(2))
+
     return JetsonGPUStat(
         gpu_index=0, name=name, mem_used_mb=used, mem_total_mb=total,
-        util_pct=util, temp_c=temp, power_w=power, power_rail=rail,
+        util_pct=util, temp_c=temp, power_w=power, power_rail=rail, engines=engines,
     )
+
+
+def _nvpmodel_mode() -> Optional[str]:
+    """``nvpmodel -q`` prints ``NV Power Mode: MAXN``; ``None`` when the tool is absent."""
+    binary = shutil.which("nvpmodel")
+    if binary is None:
+        return None
+    try:
+        r = subprocess.run([binary, "-q"], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for line in r.stdout.splitlines():
+        if "Power Mode" in line and ":" in line:
+            return line.split(":", 1)[1].strip() or None
+    return None
 
 
 if __name__ == "__main__":

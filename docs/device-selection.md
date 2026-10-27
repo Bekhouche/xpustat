@@ -47,6 +47,8 @@ Each framework runtime reads an environment variable that restricts and reorders
 | tpu | `TPU_VISIBLE_CHIPS` |
 | tenstorrent | `TT_VISIBLE_DEVICES` |
 | neuron | `NEURON_RT_VISIBLE_CORES`, which lists NeuronCore ids (ranges such as `0-3` allowed); a device is visible when any of its cores is |
+| rebellions | `RBLN_DEVICES` |
+| furiosa | `FURIOSA_DEVICES` (`npu:0` tokens accepted) |
 | jetson | `CUDA_VISIBLE_DEVICES` |
 | apple | none |
 
@@ -99,6 +101,8 @@ Every device carries `ray_resource` and `k8s_resource` so a scheduler built on x
 | tpu | `TPU` | unconfirmed |
 | neuron | `neuron_cores` | `aws.amazon.com/neuron` per device (`aws.amazon.com/neuroncore` per core) |
 | tenstorrent | `TTNPU` | unconfirmed |
+| rebellions | `RBLN` | unconfirmed |
+| furiosa | `FURIOSA` | unconfirmed |
 | cambricon, moorethreads | none in Ray | unconfirmed |
 
 ## Verified behaviour

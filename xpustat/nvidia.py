@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
 from ._device import DeviceMixin
-from ._process import ProcessInfo, enrich_process
+from ._process import ProcessInfo, enrich_process, enrich_full
 
 # ---------------------------------------------------------------------------
 # Optional fast-path: pynvml (direct NVML C library — no subprocess)
@@ -14,7 +15,7 @@ from ._process import ProcessInfo, enrich_process
 try:
     import pynvml as _pynvml  # type: ignore[import-untyped]
     _HAS_PYNVML = True
-except ImportError:
+except Exception:  # ImportError, or a binding that fails against the installed driver library
     _HAS_PYNVML = False
 
 
@@ -108,6 +109,19 @@ class NvidiaGPUStat(DeviceMixin):
         processes: Optional[List[ProcessInfo]] = None,
         cuda_cc: Optional[str] = None,
         mig_instances: Optional[List[MIGInstanceStat]] = None,
+        fan_pct: Optional[int] = None,
+        clock_sm_mhz: Optional[int] = None,
+        clock_mem_mhz: Optional[int] = None,
+        clock_max_sm_mhz: Optional[int] = None,
+        enc_pct: Optional[int] = None,
+        dec_pct: Optional[int] = None,
+        ecc_uncorrected: Optional[int] = None,
+        ecc_corrected: Optional[int] = None,
+        pstate: Optional[int] = None,
+        throttle_reasons: Optional[List[str]] = None,
+        energy_j: Optional[float] = None,
+        pcie_gen: Optional[int] = None,
+        pcie_width: Optional[int] = None,
     ) -> None:
         self.gpu_index = gpu_index
         self.uuid = uuid
@@ -123,6 +137,42 @@ class NvidiaGPUStat(DeviceMixin):
         self.cuda_cc = cuda_cc
         #: MIG compute instances when the GPU is in MIG mode (NVML path only).
         self.mig_instances: List[MIGInstanceStat] = mig_instances or []
+        self.fan_pct = fan_pct
+        self.clock_sm_mhz = clock_sm_mhz
+        self.clock_mem_mhz = clock_mem_mhz
+        self.clock_max_sm_mhz = clock_max_sm_mhz
+        #: Video encoder / decoder utilization, percent.
+        self.enc_pct = enc_pct
+        self.dec_pct = dec_pct
+        #: Volatile ECC error counts since the last driver reload.
+        self.ecc_uncorrected = ecc_uncorrected
+        self.ecc_corrected = ecc_corrected
+        #: Performance state 0 (max) to 15 (idle); ``P8`` is reported as 8.
+        self.pstate = pstate
+        #: Active throttle reasons: ``idle``, ``app_clocks``, ``power_cap``,
+        #: ``hw_slowdown``, ``sync_boost``, ``sw_thermal``, ``hw_thermal``,
+        #: ``hw_power_brake``, ``display_clocks``. Empty when unthrottled.
+        self.throttle_reasons: List[str] = list(throttle_reasons or [])
+        #: Energy consumed since the driver loaded, joules (NVML only).
+        self.energy_j = energy_j
+        self.pcie_gen = pcie_gen
+        self.pcie_width = pcie_width
+
+    @property
+    def throttled(self) -> Optional[bool]:
+        """True when a reason other than ``idle`` is active; ``None`` when unknown."""
+        if self.pstate is None and not self.throttle_reasons:
+            return None
+        return any(r != "idle" for r in self.throttle_reasons)
+
+    @property
+    def healthy(self) -> Optional[bool]:
+        """False on uncorrected ECC errors or a hardware slowdown; ``None`` when unknown."""
+        if self.ecc_uncorrected is None and not self.throttle_reasons:
+            return None
+        if self.ecc_uncorrected:
+            return False
+        return not any(r in ("hw_slowdown", "hw_thermal", "hw_power_brake") for r in self.throttle_reasons)
 
     def to_dict(self) -> dict:
         return {
@@ -139,6 +189,21 @@ class NvidiaGPUStat(DeviceMixin):
             "power_limit_w": self.power_limit_w,
             "processes": [p.to_dict() for p in self.processes],
             "mig_instances": [m.to_dict() for m in self.mig_instances],
+            "fan_pct": self.fan_pct,
+            "clock_sm_mhz": self.clock_sm_mhz,
+            "clock_mem_mhz": self.clock_mem_mhz,
+            "clock_max_sm_mhz": self.clock_max_sm_mhz,
+            "enc_pct": self.enc_pct,
+            "dec_pct": self.dec_pct,
+            "ecc_uncorrected": self.ecc_uncorrected,
+            "ecc_corrected": self.ecc_corrected,
+            "pstate": self.pstate,
+            "throttle_reasons": self.throttle_reasons,
+            "throttled": self.throttled,
+            "healthy": self.healthy,
+            "energy_j": self.energy_j,
+            "pcie_gen": self.pcie_gen,
+            "pcie_width": self.pcie_width,
         }
 
     def __repr__(self) -> str:
@@ -261,6 +326,7 @@ class NvidiaGPUStatCollection:
                 except _pynvml.NVMLError:
                     pass
 
+                proc_util = _process_utilization_nvml(handle)
                 processes: List[ProcessInfo] = []
                 try:
                     for p in _pynvml.nvmlDeviceGetComputeRunningProcesses(handle):
@@ -269,17 +335,12 @@ class NvidiaGPUStatCollection:
                             if p.usedGpuMemory
                             else None
                         )
-                        username, command = enrich_process(p.pid, "")
-                        processes.append(
-                            ProcessInfo(
-                                pid=p.pid,
-                                username=username,
-                                command=command,
-                                gpu_mem_mb=gmem,
-                            )
-                        )
+                        u = proc_util.get(p.pid, {})
+                        processes.append(enrich_full(p.pid, "", gpu_mem_mb=gmem, **u))
                 except _pynvml.NVMLError:
                     pass
+
+                extra = _extra_fields_nvml(handle)
 
                 gpus.append(
                     NvidiaGPUStat(
@@ -295,6 +356,7 @@ class NvidiaGPUStatCollection:
                         power_limit_w=power_limit_w,
                         processes=processes,
                         mig_instances=_mig_instances_nvml(handle, i),
+                        **extra,
                     )
                 )
 
@@ -325,8 +387,10 @@ class NvidiaGPUStatCollection:
         if shutil.which("nvidia-smi") is None:
             return cls([], backend="none")
 
-        # Both nvidia-smi invocations are independent; run them concurrently.
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        # The nvidia-smi invocations are independent; run them concurrently.
+        # The extended query is separate so that an old driver that rejects
+        # one of its fields does not take the base query down with it.
+        with ThreadPoolExecutor(max_workers=4) as pool:
             f_gpu = pool.submit(
                 cls._smi,
                 "--query-gpu=index,uuid,name,compute_cap,memory.used,memory.total,"
@@ -338,9 +402,19 @@ class NvidiaGPUStatCollection:
                 "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory",
                 "--format=csv,noheader,nounits",
             )
+            f_ext = pool.submit(
+                cls._smi,
+                "--query-gpu=index," + ",".join(_EXT_FIELDS),
+                "--format=csv,noheader,nounits",
+            )
+            f_pmon = pool.submit(cls._smi, "pmon", "-c", "1")
+            f_list = pool.submit(cls._smi, "-L")
         gpu_out = f_gpu.result()
         if gpu_out is None:
             return cls([], backend="none")
+        ext = _parse_extended(f_ext.result())
+        pmon = _parse_pmon(f_pmon.result())
+        migs = _parse_smi_list_mig(f_list.result())
 
         gpus: List[NvidiaGPUStat] = []
         uuid_to_idx: Dict[str, int] = {}
@@ -367,6 +441,8 @@ class NvidiaGPUStatCollection:
                     mem_used_mb=mem_used, mem_total_mb=mem_tot,
                     util_pct=util, temp_c=temp,
                     power_w=power, power_limit_w=plimit,
+                    mig_instances=migs.get(idx, []),
+                    **ext.get(idx, {}),
                 ))
                 uuid_to_idx[uuid] = idx
             except (ValueError, IndexError):
@@ -390,10 +466,8 @@ class NvidiaGPUStatCollection:
                     gidx  = uuid_to_idx.get(puuid)
                     if gidx is None:
                         continue
-                    username, command = enrich_process(pid, cmd)
                     gpu_by_idx[gidx].processes.append(
-                        ProcessInfo(pid=pid, username=username,
-                                    command=command, gpu_mem_mb=gmem)
+                        enrich_full(pid, cmd, gpu_mem_mb=gmem, **pmon.get((gidx, pid), {}))
                     )
                 except (ValueError, IndexError):
                     continue
@@ -404,6 +478,163 @@ class NvidiaGPUStatCollection:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# Throttle-reason bitmask names, in NVML bit order.
+_THROTTLE_BITS = [
+    (0x1, "idle"), (0x2, "app_clocks"), (0x4, "power_cap"), (0x8, "hw_slowdown"),
+    (0x10, "sync_boost"), (0x20, "sw_thermal"), (0x40, "hw_thermal"),
+    (0x80, "hw_power_brake"), (0x100, "display_clocks"),
+]
+
+# Extra nvidia-smi fields, queried separately from the base set.
+_EXT_FIELDS = [
+    "fan.speed", "clocks.sm", "clocks.mem", "clocks.max.sm",
+    "utilization.encoder", "utilization.decoder",
+    "ecc.errors.uncorrected.volatile.total", "ecc.errors.corrected.volatile.total",
+    "pstate", "clocks_throttle_reasons.active",
+    "pcie.link.gen.current", "pcie.link.width.current",
+]
+
+
+def throttle_reason_names(mask: int) -> List[str]:
+    return [name for bit, name in _THROTTLE_BITS if mask & bit]
+
+
+def _parse_extended(out: Optional[str]) -> Dict[int, dict]:
+    """Parse the extended query into ``{gpu_index: {field: value}}``; missing values are None."""
+    result: Dict[int, dict] = {}
+    if not out:
+        return result
+    for line in out.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != len(_EXT_FIELDS) + 1:
+            continue
+        try:
+            idx = int(parts[0])
+        except ValueError:
+            continue
+        v = parts[1:]
+        pstate = _to_int(v[8].lstrip("Pp")) if v[8] else None
+        mask = None
+        try:
+            mask = int(v[9], 16) if v[9].lower().startswith("0x") else int(v[9])
+        except (ValueError, TypeError):
+            pass
+        result[idx] = dict(
+            fan_pct=_to_int(v[0]), clock_sm_mhz=_to_int(v[1]), clock_mem_mhz=_to_int(v[2]),
+            clock_max_sm_mhz=_to_int(v[3]), enc_pct=_to_int(v[4]), dec_pct=_to_int(v[5]),
+            ecc_uncorrected=_to_int(v[6]), ecc_corrected=_to_int(v[7]), pstate=pstate,
+            throttle_reasons=throttle_reason_names(mask) if mask is not None else [],
+            pcie_gen=_to_int(v[10]), pcie_width=_to_int(v[11]),
+        )
+    return result
+
+
+def _parse_pmon(out: Optional[str]) -> Dict[tuple, dict]:
+    """
+    Parse ``nvidia-smi pmon -c 1`` into ``{(gpu_index, pid): {sm_pct, mem_pct, enc_pct, dec_pct}}``.
+    Columns: gpu pid type sm mem enc dec command; ``-`` means no sample.
+    """
+    result: Dict[tuple, dict] = {}
+    if not out:
+        return result
+    for line in out.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 7:
+            continue
+        try:
+            gidx, pid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        result[(gidx, pid)] = dict(
+            sm_pct=_to_int(parts[3]), mem_pct=_to_int(parts[4]),
+            enc_pct=_to_int(parts[5]), dec_pct=_to_int(parts[6]),
+        )
+    return result
+
+
+_MIG_LINE = re.compile(r"MIG\s+(\S+)\s+Device\s+(\d+):\s+\(UUID:\s+(MIG-[0-9a-f\-]+)\)")
+_GPU_LINE = re.compile(r"^GPU\s+(\d+):")
+_PROFILE_GB = re.compile(r"\.(\d+)gb", re.IGNORECASE)
+
+
+def _parse_smi_list_mig(out: Optional[str]) -> Dict[int, List[MIGInstanceStat]]:
+    """
+    MIG inventory from ``nvidia-smi -L``::
+
+        GPU 0: NVIDIA H100 80GB HBM3 (UUID: GPU-...)
+          MIG 1g.10gb     Device  0: (UUID: MIG-...)
+
+    ``nvidia-smi -L`` gives no usage, so ``mem_used_mb`` is 0 and the total
+    comes from the profile name. The NVML path overrides this with real data.
+    """
+    result: Dict[int, List[MIGInstanceStat]] = {}
+    if not out:
+        return result
+    current: Optional[int] = None
+    for line in out.splitlines():
+        g = _GPU_LINE.match(line.strip())
+        if g:
+            current = int(g.group(1))
+            continue
+        m = _MIG_LINE.search(line)
+        if m and current is not None:
+            profile, uuid = m.group(1), m.group(3)
+            gb = _PROFILE_GB.search(profile)
+            total = int(gb.group(1)) * 1024 if gb else 0
+            result.setdefault(current, []).append(MIGInstanceStat(
+                parent_index=current, uuid=uuid, mem_used_mb=0, mem_total_mb=total, profile=profile))
+    return result
+
+
+def _nvml_try(fn, default=None):
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def _extra_fields_nvml(handle) -> dict:
+    """The extended fields through NVML; every call is optional."""
+    n = _pynvml
+    mask = _nvml_try(lambda: int(n.nvmlDeviceGetCurrentClocksThrottleReasons(handle)))
+    energy_mj = _nvml_try(lambda: int(n.nvmlDeviceGetTotalEnergyConsumption(handle)))
+    return dict(
+        fan_pct=_nvml_try(lambda: int(n.nvmlDeviceGetFanSpeed(handle))),
+        clock_sm_mhz=_nvml_try(lambda: int(n.nvmlDeviceGetClockInfo(handle, n.NVML_CLOCK_SM))),
+        clock_mem_mhz=_nvml_try(lambda: int(n.nvmlDeviceGetClockInfo(handle, n.NVML_CLOCK_MEM))),
+        clock_max_sm_mhz=_nvml_try(lambda: int(n.nvmlDeviceGetMaxClockInfo(handle, n.NVML_CLOCK_SM))),
+        enc_pct=_nvml_try(lambda: int(n.nvmlDeviceGetEncoderUtilization(handle)[0])),
+        dec_pct=_nvml_try(lambda: int(n.nvmlDeviceGetDecoderUtilization(handle)[0])),
+        ecc_uncorrected=_nvml_try(lambda: int(n.nvmlDeviceGetTotalEccErrors(
+            handle, n.NVML_MEMORY_ERROR_TYPE_UNCORRECTED, n.NVML_VOLATILE_ECC))),
+        ecc_corrected=_nvml_try(lambda: int(n.nvmlDeviceGetTotalEccErrors(
+            handle, n.NVML_MEMORY_ERROR_TYPE_CORRECTED, n.NVML_VOLATILE_ECC))),
+        pstate=_nvml_try(lambda: int(n.nvmlDeviceGetPerformanceState(handle))),
+        throttle_reasons=throttle_reason_names(mask) if mask is not None else [],
+        energy_j=round(energy_mj / 1000.0, 1) if energy_mj is not None else None,
+        pcie_gen=_nvml_try(lambda: int(n.nvmlDeviceGetCurrPcieLinkGeneration(handle))),
+        pcie_width=_nvml_try(lambda: int(n.nvmlDeviceGetCurrPcieLinkWidth(handle))),
+    )
+
+
+def _process_utilization_nvml(handle) -> Dict[int, dict]:
+    """Per-process SM/memory/codec utilization samples; ``{}`` when the driver has none."""
+    try:
+        samples = _pynvml.nvmlDeviceGetProcessUtilization(handle, 0)
+    except Exception:
+        return {}
+    out: Dict[int, dict] = {}
+    for s in samples or []:
+        try:
+            out[int(s.pid)] = dict(sm_pct=int(s.smUtil), mem_pct=int(s.memUtil),
+                                   enc_pct=int(s.encUtil), dec_pct=int(s.decUtil))
+        except Exception:
+            continue
+    return out
+
 
 def _mig_instances_nvml(handle, parent_index: int) -> List[MIGInstanceStat]:
     """
@@ -444,8 +675,7 @@ def _mig_instances_nvml(handle, parent_index: int) -> List[MIGInstanceStat]:
         try:
             for p in _pynvml.nvmlDeviceGetComputeRunningProcesses(mig):
                 gmem = p.usedGpuMemory // (1024 * 1024) if p.usedGpuMemory else None
-                username, command = enrich_process(p.pid, "")
-                processes.append(ProcessInfo(pid=p.pid, username=username, command=command, gpu_mem_mb=gmem))
+                processes.append(enrich_full(p.pid, "", gpu_mem_mb=gmem))
         except Exception:
             pass
         out.append(MIGInstanceStat(
@@ -456,9 +686,9 @@ def _mig_instances_nvml(handle, parent_index: int) -> List[MIGInstanceStat]:
     return out
 
 
-def _to_int(s: str) -> Optional[int]:
+def _to_int(s) -> Optional[int]:
     try:
-        return int(s)
+        return int(str(s).strip().strip("[]").split(".")[0])
     except (ValueError, TypeError):
         return None
 

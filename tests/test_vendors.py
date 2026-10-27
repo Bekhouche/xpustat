@@ -494,3 +494,252 @@ def test_mig_nvml_helper_handles_unsupported(monkeypatch):
     migs = nv._mig_instances_nvml(object(), 2)
     assert len(migs) == 1 and migs[0].uuid == "MIG-0000" and migs[0].index_label == "2/5.0"
     assert (migs[0].mem_used_mb, migs[0].mem_total_mb) == (512, 10240)
+
+
+# ---------------------------------------------------------------------------
+# NVIDIA extended fields: query parser, pmon parser, throttle names
+# ---------------------------------------------------------------------------
+
+from xpustat.nvidia import _parse_extended, _parse_pmon, throttle_reason_names, _to_int, _EXT_FIELDS
+
+_EXT_LINE = "2, [N/A], 210, 405, 2040, 0, 0, 0, 0, P8, 0x0000000000000001, 1, 16\n" \
+            "3, 35, 1980, 6250, 2040, 12, 3, 2, 17, P0, 0x0000000000000004, 4, 16\n" \
+            "garbage line\n"
+_PMON = """# gpu         pid  type    sm    mem    enc    dec    command
+# Idx           #   C/G     %      %      %      %    name
+    0       2779     G      -      -      -      -    Xorg
+    3    3369478     C     99     17      -      -    python
+    4    3369479     C     99     15      0      0    python
+"""
+
+
+def test_to_int_tolerates_smi_placeholders():
+    assert _to_int("[N/A]") is None and _to_int("N/A") is None and _to_int("-") is None
+    assert _to_int("Not Active") is None and _to_int(" 42 ") == 42 and _to_int("72.00") == 72
+
+
+def test_parse_extended_query():
+    ext = _parse_extended(_EXT_LINE)
+    assert set(ext) == {2, 3}
+    g2 = ext[2]
+    assert g2["fan_pct"] is None and g2["clock_sm_mhz"] == 210 and g2["clock_mem_mhz"] == 405
+    assert g2["clock_max_sm_mhz"] == 2040 and g2["pstate"] == 8 and g2["throttle_reasons"] == ["idle"]
+    assert g2["ecc_uncorrected"] == 0 and g2["pcie_gen"] == 1 and g2["pcie_width"] == 16
+    g3 = ext[3]
+    assert g3["fan_pct"] == 35 and g3["pstate"] == 0 and g3["throttle_reasons"] == ["power_cap"]
+    assert g3["ecc_uncorrected"] == 2 and g3["ecc_corrected"] == 17 and g3["enc_pct"] == 12
+    assert _parse_extended(None) == {} and _parse_extended("") == {}
+    assert len(_EXT_FIELDS) == 12
+
+
+def test_throttle_reason_names():
+    assert throttle_reason_names(0) == []
+    assert throttle_reason_names(0x1 | 0x4 | 0x40) == ["idle", "power_cap", "hw_thermal"]
+
+
+def test_parse_pmon():
+    pm = _parse_pmon(_PMON)
+    assert pm[(3, 3369478)] == {"sm_pct": 99, "mem_pct": 17, "enc_pct": None, "dec_pct": None}
+    assert pm[(4, 3369479)]["enc_pct"] == 0 and pm[(0, 2779)]["sm_pct"] is None
+    assert _parse_pmon(None) == {}
+
+
+def test_nvidia_stat_health_properties():
+    g = NvidiaGPUStat(gpu_index=0, uuid="u", name="n", mem_used_mb=0, mem_total_mb=1)
+    assert g.throttled is None and g.healthy is None and g.to_dict()["throttle_reasons"] == []
+    g = NvidiaGPUStat(gpu_index=0, uuid="u", name="n", mem_used_mb=0, mem_total_mb=1, pstate=8,
+                      throttle_reasons=["idle"], ecc_uncorrected=0)
+    assert g.throttled is False and g.healthy is True
+    g = NvidiaGPUStat(gpu_index=0, uuid="u", name="n", mem_used_mb=0, mem_total_mb=1, pstate=0,
+                      throttle_reasons=["hw_thermal"], ecc_uncorrected=0, energy_j=12.5)
+    assert g.throttled is True and g.healthy is False and g.to_dict()["energy_j"] == 12.5
+    g = NvidiaGPUStat(gpu_index=0, uuid="u", name="n", mem_used_mb=0, mem_total_mb=1, ecc_uncorrected=3)
+    assert g.healthy is False
+
+
+# ---------------------------------------------------------------------------
+# AMD extended fields from amd-smi JSON
+# ---------------------------------------------------------------------------
+
+from xpustat.amd import _extra_fields_json
+
+_AMD_METRIC = {
+    "usage": {"gfx_activity": {"value": 5, "unit": "%"}, "umc_activity": {"value": 3, "unit": "%"}},
+    "power": {"socket_power": {"value": 20, "unit": "W"}, "throttle_status": "THROTTLED"},
+    "clock": {"gfx_0": {"clk": {"value": 82, "unit": "MHz"}, "max_clk": {"value": 2350, "unit": "MHz"}},
+              "mem_0": {"clk": {"value": 96, "unit": "MHz"}}},
+    "temperature": {"edge": {"value": 72, "unit": "C"}, "hotspot": {"value": 75, "unit": "C"}, "mem": {"value": 76, "unit": "C"}},
+    "pcie": {"width": 16, "speed": {"value": 2.5, "unit": "GT/s"}},
+    "ecc": {"total_correctable_count": 0, "total_uncorrectable_count": 0},
+    "fan": {"speed": 102, "max": 255, "rpm": 1900, "usage": {"value": 40.0, "unit": "%"}},
+    "energy": "N/A",
+    "perf_level": "AMDSMI_DEV_PERF_LEVEL_AUTO",
+}
+_AMD_STATIC = {
+    "bus": {"bdf": "0000:03:00.0", "pcie_interface_version": "Gen 5"},
+    "limit": {"ppt0": {"socket_power_limit": {"value": 300, "unit": "W"}}},
+}
+
+
+def test_amd_extra_fields_json():
+    e = _extra_fields_json(_AMD_STATIC, _AMD_METRIC)
+    assert e["fan_pct"] == 40 and e["fan_rpm"] == 1900
+    assert e["clock_gfx_mhz"] == 82 and e["clock_max_gfx_mhz"] == 2350 and e["clock_mem_mhz"] == 96
+    assert e["mem_util_pct"] == 3 and e["temp_hotspot_c"] == 75 and e["temp_mem_c"] == 76
+    assert e["ecc_uncorrected"] == 0 and e["ecc_corrected"] == 0
+    assert e["throttled"] is True and e["perf_level"] == "auto"
+    assert e["power_limit_w"] == 300.0 and e["energy_j"] is None
+    assert e["pcie_gen"] == 5 and e["pcie_width"] == 16 and e["bdf"] == "0000:03:00.0"
+    g = AMDGPUStat(gpu_index=0, name="n", mem_used_mb=0, mem_total_mb=1, **e)
+    assert g.healthy is True and g.to_dict()["throttled"] is True
+    empty = _extra_fields_json({}, {})
+    assert all(v is None for v in empty.values())
+    assert AMDGPUStat(gpu_index=0, name="n", mem_used_mb=0, mem_total_mb=1).healthy is None
+
+
+def test_jetson_engines_and_power_mode(monkeypatch):
+    line = ("RAM 2567/7772MB (lfb 1x4MB) CPU [1%@729] EMC_FREQ 3%@2133 GR3D_FREQ 12%@[624,624] "
+            "NVENC off NVDEC 1075 NVJPG off DLA0_CORE 0%@1600 DLA1_CORE 7%@1600 PVA0_VPS 0%@1024 gpu@44.3C VDD_GPU_SOC 1234mW/1234mW")
+    g = _parse_tegrastats(line, "Orin")
+    assert g.engines == {"NVENC": "off", "NVDEC": 1075, "NVJPG": "off", "EMC_FREQ": 3,
+                         "DLA0_CORE": 0, "DLA1_CORE": 7, "PVA0_VPS": 0}
+    assert g.to_dict()["engines"]["NVDEC"] == 1075 and g.power_mode is None
+    import xpustat.jetson as jm
+    monkeypatch.setattr(jm.shutil, "which", lambda n: "/usr/sbin/nvpmodel" if n == "nvpmodel" else None)
+    class R: stdout = "NV Power Mode: MAXN\n0\n"
+    monkeypatch.setattr(jm.subprocess, "run", lambda *a, **k: R())
+    assert jm._nvpmodel_mode() == "MAXN"
+
+
+def test_parse_smi_list_mig():
+    from xpustat.nvidia import _parse_smi_list_mig
+    out = """GPU 0: NVIDIA H100 80GB HBM3 (UUID: GPU-aaaa)
+  MIG 1g.10gb     Device  0: (UUID: MIG-1111-aaaa)
+  MIG 3g.40gb     Device  1: (UUID: MIG-2222-bbbb)
+GPU 1: NVIDIA H100 80GB HBM3 (UUID: GPU-bbbb)
+"""
+    migs = _parse_smi_list_mig(out)
+    assert list(migs) == [0] and [m.profile for m in migs[0]] == ["1g.10gb", "3g.40gb"]
+    assert migs[0][1].mem_total_mb == 40960 and migs[0][1].uuid == "MIG-2222-bbbb" and migs[0][0].index_label == "0/?.?"
+    assert _parse_smi_list_mig("GPU 0: NVIDIA L4 (UUID: GPU-x)\n") == {} and _parse_smi_list_mig(None) == {}
+
+
+# ---------------------------------------------------------------------------
+# Rebellions and FuriosaAI (schemas from the all-smi readers; no hardware run)
+# ---------------------------------------------------------------------------
+
+from xpustat.rebellions import RebellionsNPUStat, RebellionsNPUStatCollection, _parse_rbln_stat
+from xpustat.furiosa import FuriosaNPUStat, FuriosaNPUStatCollection, _parse_furiosa
+
+_RBLN = """{
+  "KMD_version": "3.0.0",
+  "devices": [
+    {"npu": 0, "name": "RBLN-CA22", "sid": "1", "uuid": "4126c167", "device": "rbln0", "status": "normal",
+     "fw_ver": "3.0.0", "pci": {"dev": "0x1220", "bus_id": "0000:03:00.0", "numa_node": "0", "link_speed": "32.0GT/s", "link_width": "16"},
+     "temperature": "31C", "card_power": "17521800uW", "pstate": "P14",
+     "memory": {"used": "1073741824", "total": "16877879296"}, "util": "12.4", "board_info": "0005000c", "location": 5},
+    {"npu": "1", "name": "RBLN-CA22", "uuid": "a58a772b", "device": "rbln1", "status": "error",
+     "pci": {"bus_id": "0000:04:00.0"}, "temperature": "33C", "card_power": "17521800uW", "pstate": "P0",
+     "memory": {"used": "0", "total": "16877879296"}, "util": "0.0", "location": 6}
+  ],
+  "contexts": [
+    {"ctx_id": "a", "npu": 0, "process": "worker", "pid": "4194303", "memalloc": "512MiB", "util_info": "12.5"},
+    {"ctx_id": "b", "npu": {"unexpected": true}, "cmd": "x", "pid": 1, "memory": "1MiB"}
+  ]
+}"""
+
+
+def test_rebellions_parse():
+    npus = _parse_rbln_stat(_RBLN)
+    assert len(npus) == 2
+    a = npus[0]
+    assert a.vendor == "rebellions" and a.npu_index == 0 and a.name == "RBLN-CA22"
+    assert (a.mem_used_mb, a.mem_total_mb) == (1024, 16096) and a.util_pct == 12
+    assert a.temp_c == 31 and a.power_w == 17.5 and a.pstate == 14 and a.status == "normal" and a.healthy is True
+    assert a.bus_id == "0000:03:00.0" and a.device_node == "rbln0" and a.location == 5
+    assert len(a.processes) == 1 and a.processes[0].pid == 4194303 and a.processes[0].gpu_mem_mb == 512 and a.processes[0].sm_pct == 12
+    b = npus[1]
+    assert b.npu_index == 1 and b.healthy is False and b.pstate == 0 and b.processes == []
+    assert a.torch_device is None and a.ray_resource == "RBLN"
+    assert RebellionsNPUStatCollection(npus)[1] is b and _parse_rbln_stat("nope") == [] and _parse_rbln_stat("[]") == []
+    assert a.to_dict()["healthy"] is True
+
+
+_FURIOSA_INFO = """[
+  {"index": "0", "arch": "rngd", "dev_name": "npu0", "device_uuid": "u0", "device_sn": "s0", "firmware": "2026.1",
+   "temperature": "40°C", "power": "38 W", "core_clock": "2000 MHz", "governor": "Performance", "pci_bdf": "0000:17:00.0", "pci_dev": "x"},
+  {"index": "1", "arch": "rngd", "dev_name": "npu1", "device_uuid": "u1", "device_sn": "s1", "firmware": "2026.1",
+   "temperature": "41°C", "power": "37 W", "core_clock": "2000 MHz", "governor": "Performance", "pci_bdf": "0000:18:00.0", "pci_dev": "y"}
+]"""
+_FURIOSA_STATUS = """[
+  {"index": "0", "arch": "rngd", "device": "npu0", "liveness": "alive",
+   "cores": [{"idx": 0, "status": "available"}], "memory": {"DRAM": {"used_size": 10737418240, "total_size": 51539607552, "used_ratio": 0.2}},
+   "pe_utilizations": [{"pe_core": 0, "pe_occupancy": true, "utilization": 80.0}, {"pe_core": 1, "pe_utilization": 20.0}]},
+  {"index": "1", "arch": "rngd", "device": "npu1", "liveness": "dead", "pe_utilizations": []}
+]"""
+_FURIOSA_PS = """[{"dev_name": "npu0:[0, 7]", "pid": 4194303, "cmdline": "/opt/bin/python serve.py"}]"""
+
+
+def test_furiosa_parse():
+    npus = _parse_furiosa(_FURIOSA_INFO, _FURIOSA_STATUS, _FURIOSA_PS)
+    assert len(npus) == 2
+    a = npus[0]
+    assert a.vendor == "furiosa" and a.npu_index == 0 and a.name == "FuriosaAI RNGD" and a.arch == "rngd"
+    assert (a.mem_used_mb, a.mem_total_mb) == (10240, 49152) and a.util_pct == 50 and a.pe_util_pct == [80, 20]
+    assert a.temp_c == 40 and a.power_w == 38.0 and a.clock_mhz == 2000 and a.governor == "Performance"
+    assert a.bus_id == "0000:17:00.0" and a.liveness == "alive" and a.healthy is True
+    assert len(a.processes) == 1 and a.processes[0].pid == 4194303 and a.processes[0].command == "python"
+    b = npus[1]
+    assert b.mem_total_mb == 0 and b.util_pct is None and b.healthy is False and b.processes == []
+    assert _parse_furiosa("garbage", None, None) == []
+    assert _parse_furiosa(_FURIOSA_INFO, None, None)[0].mem_total_mb == 0
+    assert FuriosaNPUStatCollection(npus)[0].ray_resource == "FURIOSA"
+
+
+def test_furiosa_and_rebellions_visible_devices():
+    from xpustat import visible_indices, framework_index
+    assert visible_indices("furiosa", env={"FURIOSA_DEVICES": "npu:0,npu:2"}) == [0, 2]
+    assert visible_indices("rebellions", env={"RBLN_DEVICES": "1"}) == [1]
+    n = RebellionsNPUStat(npu_index=1, name="n", mem_used_mb=0, mem_total_mb=1)
+    assert framework_index(n, env={"RBLN_DEVICES": "1"}) == 0
+
+
+def test_new_npu_backends_off_host(monkeypatch):
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda *_: None)
+    assert len(RebellionsNPUStatCollection.new_query()) == 0 and len(FuriosaNPUStatCollection.new_query()) == 0
+
+
+# ---------------------------------------------------------------------------
+# Apple sensors (macOS only; the module degrades to {} elsewhere)
+# ---------------------------------------------------------------------------
+
+def test_apple_sensors_off_macos_return_empty(monkeypatch):
+    from xpustat import _apple_sensors as sens
+    monkeypatch.setattr(sens, "_ENABLED", False)
+    assert sens.energy_watts() == {} and sens.temperatures() == {}
+
+
+def test_apple_sensors_on_this_mac():
+    import sys, platform
+    if sys.platform != "darwin" or platform.machine() != "arm64":
+        pytest.skip("Apple Silicon only")
+    from xpustat import _apple_sensors as sens
+    watts = sens.energy_watts()
+    temps = sens.temperatures()
+    assert "gpu" in watts and "cpu" in watts and all(v >= 0 for v in watts.values())
+    assert temps.get("gpu") and 10 < temps["gpu"] < 120 and temps.get("cpu") and 10 < temps["cpu"] < 120
+    col = AppleGPUStatCollection.new_query()
+    g = col[0]
+    assert g.temp_c and g.power_w is not None and g.ane_power_w is not None
+    assert g.to_dict()["ane_power_w"] == g.ane_power_w
+    # free memory is the OS "available" figure, not total minus used
+    import psutil
+    assert abs(g.mem_free_mb - psutil.virtual_memory().available // (1024 * 1024)) < 2048
+
+
+def test_apple_stat_sensor_fields_default_none():
+    g = AppleGPUStat(gpu_index=0, name="x", mem_used_mb=0, mem_total_mb=1)
+    assert g.temp_c is None and g.power_w is None and g.ane_power_w is None
+    g2 = AppleGPUStat(gpu_index=0, name="x", mem_used_mb=0, mem_total_mb=1, temp_c=41, power_w=3.2, ane_power_w=0.1)
+    assert g2.to_dict()["temp_c"] == 41 and g2.to_dict()["power_w"] == 3.2

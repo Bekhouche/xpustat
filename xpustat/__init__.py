@@ -33,6 +33,10 @@ Quick start::
     # JSON with metadata wrapper
     print(stats.to_json(metadata=True))
 
+    # Host CPU and memory, on request
+    stats = xpustat.query_all(include_cpu=True)
+    print(stats.cpu[0].name, stats.cpu[0].cores_logical, stats.cpu[0].mem_free_mb)
+
     # Pick the least-loaded device and hand it to PyTorch
     dev = xpustat.pick_device()[0]
     model.to(dev.torch_device)            # e.g. "cuda:2", "npu:0", "mps"
@@ -60,6 +64,9 @@ from .neuron import NeuronDeviceStat, NeuronDeviceStatCollection
 from .tpu import TPUChipStat, TPUChipStatCollection
 from .tenstorrent import TenstorrentDeviceStat, TenstorrentDeviceStatCollection
 from .jetson import JetsonGPUStat, JetsonGPUStatCollection
+from .cpu import CPUStat, CPUStatCollection
+from .rebellions import RebellionsNPUStat, RebellionsNPUStatCollection
+from .furiosa import FuriosaNPUStat, FuriosaNPUStatCollection
 from ._device import (DeviceMixin, TORCH_DEVICE_TYPE, VISIBLE_DEVICES_ENV, RAY_RESOURCE, K8S_RESOURCE,
                       pick_device, visible_indices, framework_index, torch_device, visible_devices_env)
 from .prometheus import to_prometheus
@@ -104,6 +111,12 @@ __all__ = [
     "TenstorrentDeviceStatCollection",
     "JetsonGPUStat",
     "JetsonGPUStatCollection",
+    "CPUStat",
+    "CPUStatCollection",
+    "RebellionsNPUStat",
+    "RebellionsNPUStatCollection",
+    "FuriosaNPUStat",
+    "FuriosaNPUStatCollection",
     # Device selection / framework helpers
     "DeviceMixin",
     "TORCH_DEVICE_TYPE",

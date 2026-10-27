@@ -15,6 +15,9 @@ Supported backends (silently skipped if the tool is not installed):
     - Google TPU      tpu-info
     - Tenstorrent     tt-smi
     - NVIDIA Jetson   tegrastats
+    - CPU             psutil (opt-in: include_cpu=True / --cpu)
+    - Rebellions      rbln-stat
+    - FuriosaAI       furiosa-smi
     - plugins         any package exposing an ``xpustat.backends`` entry point
 """
 
@@ -41,6 +44,9 @@ from .intel_gpu import IntelGPUStat, IntelGPUStatCollection
 from .moorethreads import MooreThreadsGPUStat, MooreThreadsGPUStatCollection
 from .nvidia import NvidiaGPUStat, NvidiaGPUStatCollection
 from .jetson import JetsonGPUStat, JetsonGPUStatCollection
+from .cpu import CPUStat, CPUStatCollection
+from .rebellions import RebellionsNPUStat, RebellionsNPUStatCollection
+from .furiosa import FuriosaNPUStat, FuriosaNPUStatCollection
 from .neuron import NeuronDeviceStat, NeuronDeviceStatCollection
 from .tpu import TPUChipStat, TPUChipStatCollection
 from .tenstorrent import TenstorrentDeviceStat, TenstorrentDeviceStatCollection
@@ -50,6 +56,7 @@ AnyDeviceStat = Union[
     NvidiaGPUStat, AMDGPUStat, GaudiAIPStat, IntelGPUStat,
     HuaweiNPUStat, HygonDCUStat, CambriconMLUStat, MooreThreadsGPUStat,
     AppleGPUStat, NeuronDeviceStat, TPUChipStat, TenstorrentDeviceStat, JetsonGPUStat,
+    CPUStat, RebellionsNPUStat, FuriosaNPUStat,
 ]
 
 
@@ -99,6 +106,9 @@ class XPUStatCollection:
         tpu: TPUChipStatCollection = None,
         tenstorrent: TenstorrentDeviceStatCollection = None,
         jetson: JetsonGPUStatCollection = None,
+        cpu: CPUStatCollection = None,
+        rebellions: RebellionsNPUStatCollection = None,
+        furiosa: FuriosaNPUStatCollection = None,
         **plugins: Any,
     ) -> None:
         self.nvidia = nvidia
@@ -114,6 +124,10 @@ class XPUStatCollection:
         self.tpu = tpu if tpu is not None else TPUChipStatCollection([])
         self.tenstorrent = tenstorrent if tenstorrent is not None else TenstorrentDeviceStatCollection([])
         self.jetson = jetson if jetson is not None else JetsonGPUStatCollection([])
+        self.rebellions = rebellions if rebellions is not None else RebellionsNPUStatCollection([])
+        self.furiosa = furiosa if furiosa is not None else FuriosaNPUStatCollection([])
+        #: The host CPU, filled only by ``query_all(include_cpu=True)``; empty otherwise.
+        self.cpu = cpu if cpu is not None else CPUStatCollection([])
         # Plugin backends (entry point group ``xpustat.backends``), keyed by vendor.
         self._plugins: dict = {}
         for name, cls in _PLUGIN_BACKENDS.items():
@@ -142,7 +156,10 @@ class XPUStatCollection:
             + list(self.tpu)
             + list(self.tenstorrent)
             + list(self.jetson)
+            + list(self.rebellions)
+            + list(self.furiosa)
             + [d for col in self._plugins.values() for d in col]
+            + list(self.cpu)
         )
 
     def __iter__(self) -> Iterator[AnyDeviceStat]:
@@ -215,7 +232,13 @@ class XPUStatCollection:
             "tpu":          self.tpu.to_dict()["chips"],
             "tenstorrent":  self.tenstorrent.to_dict()["devices"],
             "jetson":       self.jetson.to_dict()["gpus"],
+            "rebellions":   self.rebellions.to_dict()["npus"],
+            "furiosa":      self.furiosa.to_dict()["npus"],
         }
+        # The CPU is opt-in: its key appears only when it was queried, so the
+        # JSON shape of an accelerator-only query is unchanged.
+        if len(self.cpu):
+            out["cpu"] = self.cpu.to_dict()["cpus"]
         for name, col in self._plugins.items():
             d = col.to_dict()
             # A plugin's to_dict() holds one list under a vendor-chosen key.
@@ -271,6 +294,8 @@ _BACKENDS: List[tuple] = [
     ("tpu",          TPUChipStatCollection),
     ("tenstorrent",  TenstorrentDeviceStatCollection),
     ("jetson",       JetsonGPUStatCollection),
+    ("rebellions",   RebellionsNPUStatCollection),
+    ("furiosa",      FuriosaNPUStatCollection),
 ]
 
 #: Backends added at runtime, by :func:`register_backend` or entry points.
@@ -310,7 +335,7 @@ def unregister_backend(name: str) -> None:
 def _refresh_registry() -> None:
     global _BACKENDS_KEYS, _BACKENDS_MAP
     _BACKENDS_KEYS = _BUILTIN_KEYS + list(_PLUGIN_BACKENDS)
-    _BACKENDS_MAP = {**dict(_BACKENDS), **_PLUGIN_BACKENDS}
+    _BACKENDS_MAP = {**dict(_BACKENDS), **_PLUGIN_BACKENDS, "cpu": CPUStatCollection}
 
 
 def _load_entry_points() -> None:
@@ -332,7 +357,7 @@ def _load_entry_points() -> None:
                 sys.stderr.write(f"xpustat: plugin {ep.name!r} not loaded: {exc}\n")
 
 _BACKENDS_KEYS: List[str] = list(_BUILTIN_KEYS)
-_BACKENDS_MAP: dict = {name: cls for name, cls in _BACKENDS}
+_BACKENDS_MAP: dict = {**{name: cls for name, cls in _BACKENDS}, "cpu": CPUStatCollection}
 _load_entry_points()
 
 
@@ -345,7 +370,7 @@ _CACHE: dict = {"key": None, "time": 0.0, "stats": None}
 
 
 def query_all(parallel: bool = True, vendors: Optional[List[str]] = None,
-              max_age: Optional[float] = None) -> XPUStatCollection:
+              max_age: Optional[float] = None, include_cpu: bool = False) -> XPUStatCollection:
     """
     Query every supported accelerator backend and return an XPUStatCollection.
 
@@ -361,11 +386,14 @@ def query_all(parallel: bool = True, vendors: Optional[List[str]] = None,
                  old (same ``vendors``). ``None`` (default) always queries.
                  Meant for exporters and loops that poll faster than the
                  vendor tools can answer.
+        include_cpu: Also query the host CPU and memory (``stats.cpu``). Off by
+                 default: the CPU is not an accelerator and its first reading
+                 in a process samples utilization for 0.1 s.
 
     Returns:
         :class:`XPUStatCollection` populated with results.
     """
-    cache_key = None if vendors is None else tuple(sorted(vendors))
+    cache_key = (None if vendors is None else tuple(sorted(vendors)), bool(include_cpu))
     if max_age is not None:
         with _CACHE_LOCK:
             if (_CACHE["stats"] is not None and _CACHE["key"] == cache_key
@@ -373,6 +401,8 @@ def query_all(parallel: bool = True, vendors: Optional[List[str]] = None,
                 return _CACHE["stats"]
 
     all_backends = list(_BACKENDS) + list(_PLUGIN_BACKENDS.items())
+    if include_cpu:
+        all_backends.append(("cpu", CPUStatCollection))
     results: dict = {}
     _empty = {name: cls([]) for name, cls in all_backends}
 
@@ -417,6 +447,9 @@ def query_all(parallel: bool = True, vendors: Optional[List[str]] = None,
         tpu=results["tpu"],
         tenstorrent=results["tenstorrent"],
         jetson=results["jetson"],
+        rebellions=results["rebellions"],
+        furiosa=results["furiosa"],
+        cpu=results.get("cpu"),
         **{name: results[name] for name in _PLUGIN_BACKENDS},
     )
     with _CACHE_LOCK:
@@ -431,7 +464,7 @@ def query(vendor: str):
     Args:
         vendor: One of: ``nvidia``, ``amd``, ``gaudi``, ``intel``,
                 ``huawei``, ``hygon``, ``cambricon``, ``moorethreads``, ``apple``,
-                ``neuron``, ``tpu``, ``tenstorrent``, ``jetson``, or a registered plugin.
+                ``neuron``, ``tpu``, ``tenstorrent``, ``jetson``, ``rebellions``, ``furiosa``, ``cpu``, or a registered plugin.
 
     Returns:
         The vendor-specific ``*StatCollection`` (iterable, has ``to_dict()``).

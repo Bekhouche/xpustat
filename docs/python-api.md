@@ -10,9 +10,9 @@ for dev in stats:
 
 ## Querying
 
-### `query_all(parallel=True, vendors=None, max_age=None)`
+### `query_all(parallel=True, vendors=None, max_age=None, include_cpu=False)`
 
-Queries every backend and returns an `XPUStatCollection`. With `parallel=True` the backends run in a thread pool; `parallel=False` runs them one after another, which is easier to debug. `vendors` restricts the query to a list of vendor keys; the other vendors come back empty. `max_age` returns the previous result when it is at most that many seconds old and was made with the same `vendors`; it is meant for exporters and loops that poll faster than the vendor tools answer.
+Queries every backend and returns an `XPUStatCollection`. With `parallel=True` the backends run in a thread pool; `parallel=False` runs them one after another, which is easier to debug. `vendors` restricts the query to a list of vendor keys; the other vendors come back empty. `max_age` returns the previous result when it is at most that many seconds old and was made with the same `vendors`; it is meant for exporters and loops that poll faster than the vendor tools answer. `include_cpu=True` also reads the host CPU and memory into `stats.cpu`; it is off by default because the CPU is not an accelerator and the first reading in a process samples utilization for 0.1 s.
 
 A backend whose tool is missing, or whose query raises, contributes an empty collection. `query_all` itself does not raise for vendor problems.
 
@@ -29,6 +29,7 @@ The same, called on the class directly: `xpustat.AppleGPUStatCollection.new_quer
 | Member | Meaning |
 |---|---|
 | `stats.nvidia`, `stats.amd`, ... `stats.tenstorrent` | the per-vendor collection |
+| `stats.cpu` | the host CPU, one element when queried with `include_cpu=True`, else empty |
 | `stats["amd"]` | the same by key; `KeyError` for an unknown key |
 | `for dev in stats` | every device, in vendor order |
 | `len(stats)`, `bool(stats)` | total device count |
@@ -74,6 +75,10 @@ Every device object has these, whatever the vendor. They are provided by `Device
 | `username` | owner, `"?"` when the process has exited or is not readable |
 | `command` | executable basename from `psutil`, or the vendor tool's name for the process when `psutil` cannot read it |
 | `gpu_mem_mb` | device memory used by that process, `None` when not reported |
+| `sm_pct`, `mem_pct`, `enc_pct`, `dec_pct` | the process's own compute, memory-bandwidth, encoder and decoder utilization; NVIDIA only, `None` elsewhere |
+| `cmdline` | full command line when readable |
+| `rss_mb`, `cpu_pct` | host resident memory and CPU usage of the process; `cpu_pct` is measured since the previous query in the same Python process, so the first reading is 0 |
+| `container` | `docker:<12 hex>`, `containerd:<id>`, `podman:<id>`, `pod:<uid>` or `slurm:<jobid>` from the process's cgroup; `None` on the bare host or outside Linux |
 
 ### Vendor-specific fields
 
@@ -81,23 +86,26 @@ The index attribute is the first entry of each row. These are the keys of `to_di
 
 | Vendor | Class | Fields |
 |---|---|---|
-| nvidia | `NvidiaGPUStat` | `gpu_index`, `uuid`, `cuda_cc`, `util_pct`, `temp_c`, `power_w`, `power_limit_w`, `mig_instances` (list of `MIGInstanceStat`: `parent_index`, `uuid`, `gpu_instance_id`, `compute_instance_id`, `profile`, memory, processes; NVML path only) |
-| jetson | `JetsonGPUStat` | `gpu_index`, `util_pct`, `temp_c`, `power_w`, `power_rail`, `unified_memory` (always true: RAM is shared with the CPU) |
-| amd | `AMDGPUStat` | `gpu_index`, `gfx_target`, `util_pct`, `temp_c`, `power_w` |
+| nvidia | `NvidiaGPUStat` | `gpu_index`, `uuid`, `cuda_cc`, `util_pct`, `temp_c`, `power_w`, `power_limit_w`, `fan_pct`, `clock_sm_mhz`, `clock_mem_mhz`, `clock_max_sm_mhz`, `enc_pct`, `dec_pct`, `ecc_uncorrected`, `ecc_corrected`, `pstate`, `throttle_reasons` (`idle`, `app_clocks`, `power_cap`, `hw_slowdown`, `sync_boost`, `sw_thermal`, `hw_thermal`, `hw_power_brake`, `display_clocks`), `throttled`, `healthy`, `energy_j` (NVML only), `pcie_gen`, `pcie_width`, `mig_instances` (list of `MIGInstanceStat`: `parent_index`, `uuid`, `gpu_instance_id`, `compute_instance_id`, `profile`, memory, processes; full data on the NVML path, inventory only from `nvidia-smi -L`) |
+| jetson | `JetsonGPUStat` | `gpu_index`, `util_pct`, `temp_c`, `power_w`, `power_rail`, `unified_memory` (always true: RAM is shared with the CPU), `engines` (NVENC, NVDEC, NVJPG, DLA, PVA, EMC: frequency, `off`, or load percent), `power_mode` from `nvpmodel` |
+| rebellions | `RebellionsNPUStat` | `npu_index`, `uuid`, `device_node`, `bus_id`, `fw_version`, `location`, `util_pct`, `temp_c`, `power_w`, `pstate`, `status`, `healthy`; processes from `contexts` with their allocation and utilization |
+| furiosa | `FuriosaNPUStat` | `npu_index`, `arch`, `uuid`, `serial`, `firmware`, `bus_id`, `util_pct` (mean over processing elements), `pe_util_pct`, `temp_c`, `power_w`, `clock_mhz`, `governor`, `liveness`, `healthy` |
+| cpu | `CPUStat` | `cpu_index`, `arch`, `cores_physical`, `cores_logical`, `core_layout` (`4P+6E` on Apple Silicon), `sockets`, `numa_nodes`, `freq_mhz`, `freq_max_mhz`, `util_pct`, `per_core_pct`, `load_avg`, `swap_used_mb`, `swap_total_mb`, `temp_c` (Linux sensors), `power_w` (Linux RAPL when readable), `cgroup_cpu_limit`, `cgroup_mem_limit_mb`. Memory is system RAM; `mem_free_mb` is the available figure. Processes are the top five by resident memory, RSS in `gpu_mem_mb`. `torch_device` is `cpu`, `ray_resource` `CPU`, `k8s_resource` `cpu`. |
+| amd | `AMDGPUStat` | `gpu_index`, `gfx_target`, `util_pct`, `temp_c`, `power_w`, `power_limit_w`, `fan_pct`, `fan_rpm`, `clock_gfx_mhz`, `clock_max_gfx_mhz`, `clock_mem_mhz`, `mem_util_pct`, `temp_hotspot_c`, `temp_mem_c`, `ecc_uncorrected`, `ecc_corrected`, `throttled`, `healthy`, `perf_level`, `energy_j` (MI series), `pcie_gen`, `pcie_width`, `bdf` |
 | gaudi | `GaudiAIPStat` | `aip_index` |
 | intel | `IntelGPUStat` | `device_id` |
 | huawei | `HuaweiNPUStat` | `npu_id`, `chip_id`, `health`, `temp_c`, `power_w`, `ai_core_pct`, `card_type` |
 | hygon | `HygonDCUStat` | `card_index` |
 | cambricon | `CambriconMLUStat` | `card_id`, `chip_id` |
 | moorethreads | `MooreThreadsGPUStat` | `gpu_id` |
-| apple | `AppleGPUStat` | `gpu_index`, `gpu_cores`, `unified_memory`, `util_pct`; `temp_c` and `power_w` are always `None` |
+| apple | `AppleGPUStat` | `gpu_index`, `gpu_cores`, `unified_memory`, `util_pct`, `temp_c`, `power_w`, `ane_power_w` (sensors read in-process, no sudo) |
 | neuron | `NeuronDeviceStat` | `neuron_device`, `nc_count`, `neuroncore_ids`, `bdf`; `util_pct` is always `None`, `mem_used_mb` is always 0 |
 | tpu | `TPUChipStat` | `device_id`, `device_path`, `util_pct` (TensorCore duty cycle), `hbm_bw_util_pct` |
 | tenstorrent | `TenstorrentDeviceStat` | `tt_device`, `bus_id`, `board_id`, `temp_c`, `power_w`, `board_power_w`, `aiclk_mhz`; memory fields are always 0 |
 
 ## JSON output
 
-`stats.to_dict()` and `xpustat --json` produce one list per vendor key. Every vendor key is present, with an empty list for vendors not found, so consumers can rely on the shape.
+`stats.to_dict()` and `xpustat --json` produce one list per vendor key. Every vendor key is present, with an empty list for vendors not found, so consumers can rely on the shape. The one exception is `cpu`, which appears only when the CPU was queried (`include_cpu=True` or `--cpu`), so that accelerator-only output keeps its 0.3.0 shape.
 
 ```json
 {
@@ -141,5 +149,7 @@ The example is assembled from a query on a host with L4 GPUs; the numbers are il
 |---|---|
 | `pick_device`, `visible_devices_env`, `visible_indices`, `framework_index`, `torch_device`, `TORCH_DEVICE_TYPE`, `VISIBLE_DEVICES_ENV`, `RAY_RESOURCE`, `K8S_RESOURCE` | [Device selection](device-selection.md) |
 | `register_backend`, `unregister_backend`, `DeviceMixin` | [Contributing](contributing.md#plugin-backends) |
+| `xpustat.remote.query_hosts`, `query_ssh`, `RemoteHost` | other machines, see [Command line](cli.md#several-machines) |
+| `xpustat.doctor.diagnose`, `format_report` | the diagnostics behind `--doctor` |
 | `to_prometheus`, `xpustat.prometheus.serve` | [Prometheus](prometheus.md) |
 | `__version__` | the version string |

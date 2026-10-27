@@ -26,6 +26,6 @@ Each query runs in three stages:
 
 ## Limitations
 
-- Five of the twelve backends (Intel Gaudi, Intel Arc, Hygon, Cambricon, Moore Threads) and the three cloud and startup backends (Neuron, TPU, Tenstorrent) are implemented from the vendor tools' documented output but have not been run on real hardware. The [Backends](backends.md) page states the status per vendor.
+- Of the fifteen accelerator backends, five are tested on hardware (NVIDIA, AMD, Huawei Ascend, Apple, and the CPU row). The others (Intel Gaudi, Intel Arc, Hygon, Cambricon, Moore Threads, Neuron, TPU, Tenstorrent, Jetson, Rebellions, FuriosaAI) are implemented from the vendor tools' documented output and await a hardware run. The [Backends](backends.md) page states the status per vendor.
 - Per-process attribution depends on what the vendor tool exposes. Apple, Neuron and Tenstorrent report no per-process memory.
-- Temperature and power are unavailable on Apple Silicon without root.
+- Per-process GPU usage on Apple Silicon is root-only; temperature and power are read without root through the SMC and IOReport.

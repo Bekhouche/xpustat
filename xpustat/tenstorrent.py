@@ -32,7 +32,7 @@ import subprocess
 from typing import Any, List, Optional
 
 from ._device import DeviceMixin
-from ._process import ProcessInfo, enrich_process
+from ._process import ProcessInfo, enrich_full
 
 
 class TenstorrentDeviceStat(DeviceMixin):
@@ -174,11 +174,10 @@ def _parse_snapshot(output: str) -> List[TenstorrentDeviceStat]:
             continue
         cmdline = str(p.get("cmdline") or "")
         fallback = os.path.basename(cmdline.split()[0]) if cmdline.strip() else "?"
-        username, command = enrich_process(pid, fallback)
-        if username == "?" and p.get("user"):
-            username = str(p["user"])
-        procs_by_dev.setdefault(dev, []).append(
-            ProcessInfo(pid=pid, username=username, command=command, gpu_mem_mb=None))
+        info = enrich_full(pid, fallback, gpu_mem_mb=None)
+        if info.username == "?" and p.get("user"):
+            info.username = str(p["user"])
+        procs_by_dev.setdefault(dev, []).append(info)
 
     devices: List[TenstorrentDeviceStat] = []
     for i, entry in enumerate(data.get("device_info") or []):

@@ -8,9 +8,7 @@ version = "0.4.0"
 description = "A unified stat tool for NVIDIA, AMD, Intel, Huawei, Hygon, Cambricon, Moore Threads, Apple Silicon, AWS Neuron, Google TPU and Tenstorrent accelerators"
 readme = "README.md"
 authors = [
-    { name = "Salah Eddine Bekhouche" },
-    { name = "Hichem Telli" },
-    { email = "bekhouchesalah@gmail.com" },
+    { name = "Salah Eddine Bekhouche", email = "bekhouchesalah@gmail.com" },
 ]
 license = { text = "MIT" }
 requires-python = ">=3.9"

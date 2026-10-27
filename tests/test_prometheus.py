@@ -116,3 +116,17 @@ def test_prometheus_exports_mig_instances_as_devices():
     assert 'xpustat_memory_total_bytes{vendor="nvidia",index="0/3.0",name="MIG 1g.10gb"} 10737418240' in lines
     assert any('index="0/3.0"' in l and 'uuid="MIG-1"' in l for l in lines if l.startswith("xpustat_device_info"))
     assert 'xpustat_scrape_devices{vendor="nvidia"} 1' in lines      # parent GPU count unchanged
+
+
+def test_http_server_json_endpoint():
+    handler = type("H", (prom._Handler,), {"query": staticmethod(_collection)})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    port = server.server_address[1]
+    t = threading.Thread(target=server.serve_forever, daemon=True); t.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=5) as r:
+            data = json.loads(r.read().decode())
+            assert r.headers["Content-Type"].startswith("application/json")
+            assert "hostname" in data and data["devices"]["nvidia"][0]["name"].startswith("L4")
+    finally:
+        server.shutdown(); server.server_close()

@@ -32,7 +32,7 @@ import subprocess
 from typing import List, Optional
 
 from ._device import DeviceMixin
-from ._process import ProcessInfo, enrich_process
+from ._process import ProcessInfo, enrich_full
 
 _MIB = 1024 * 1024
 
@@ -176,9 +176,7 @@ def _parse_neuron_ls(output: str) -> List[NeuronDeviceStat]:
                 continue
             cmd = str(p.get("command") or "")
             fallback = os.path.basename(cmd.split()[0]) if cmd.strip() else "?"
-            username, command = enrich_process(pid, fallback)
-            processes.append(ProcessInfo(pid=pid, username=username,
-                                         command=command, gpu_mem_mb=None))
+            processes.append(enrich_full(pid, fallback, gpu_mem_mb=None))
 
         cores = f" ({nc_count} NeuronCores)" if nc_count else ""
         devices.append(NeuronDeviceStat(

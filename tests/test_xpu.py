@@ -46,7 +46,7 @@ def test_xpustat_collection_to_dict():
     assert "amd" in d
     assert "moorethreads" in d
     assert "apple" in d
-    for k in ("neuron", "tpu", "tenstorrent"):
+    for k in ("neuron", "tpu", "tenstorrent", "jetson", "rebellions", "furiosa"):
         assert d[k] == []
     assert d["nvidia"] == []
 

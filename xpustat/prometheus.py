@@ -73,10 +73,30 @@ _METRICS: List[Tuple[str, str, str]] = [
     ("xpustat_utilization_percent", "gauge", "Compute utilization (0-100)."),
     ("xpustat_temperature_celsius", "gauge", "Device temperature."),
     ("xpustat_power_watts",         "gauge", "Power draw."),
+    ("xpustat_fan_percent",          "gauge", "Fan speed, percent of maximum."),
+    ("xpustat_clock_sm_mhz",         "gauge", "SM / graphics clock, MHz."),
+    ("xpustat_clock_mem_mhz",        "gauge", "Memory clock, MHz."),
+    ("xpustat_encoder_percent",      "gauge", "Video encoder utilization."),
+    ("xpustat_decoder_percent",      "gauge", "Video decoder utilization."),
+    ("xpustat_ecc_uncorrected_total", "gauge", "Uncorrected ECC errors since the driver loaded."),
+    ("xpustat_ecc_corrected_total",  "gauge", "Corrected ECC errors since the driver loaded."),
+    ("xpustat_throttled",            "gauge", "1 when the device is throttled for a reason other than idle."),
+    ("xpustat_healthy",              "gauge", "1 when no uncorrected ECC error or hardware slowdown is reported."),
+    ("xpustat_pstate",               "gauge", "NVIDIA performance state, 0 (max) to 15 (idle)."),
+    ("xpustat_energy_joules_total",  "counter", "Energy consumed since the driver loaded, joules."),
     ("xpustat_process_memory_bytes", "gauge", "Device memory used per process."),
+    ("xpustat_process_sm_percent",   "gauge", "Device compute utilization per process."),
+    ("xpustat_process_rss_bytes",    "gauge", "Host resident memory per process."),
     ("xpustat_process_count",       "gauge", "Number of processes using the device."),
     ("xpustat_scrape_devices",      "gauge", "Number of devices seen in this scrape, per vendor."),
 ]
+
+
+def _opt(samples: Dict[str, List[str]], name: str, lbl: str, value: Any) -> None:
+    """Append a sample when *value* is known; bools become 0/1."""
+    if value is None:
+        return
+    samples[name].append(f"{name}{lbl} {_fmt(value)}")
 
 
 def to_prometheus(collection: Any) -> str:
@@ -120,15 +140,32 @@ def to_prometheus(collection: Any) -> str:
                 samples["xpustat_power_watts"].append(
                     f"xpustat_power_watts{lbl} {_fmt(power)}")
 
+            _opt(samples, "xpustat_fan_percent", lbl, getattr(dev, "fan_pct", None))
+            _opt(samples, "xpustat_clock_sm_mhz", lbl, getattr(dev, "clock_sm_mhz", None) if getattr(dev, "clock_sm_mhz", None) is not None else getattr(dev, "clock_gfx_mhz", None))
+            _opt(samples, "xpustat_clock_mem_mhz", lbl, getattr(dev, "clock_mem_mhz", None))
+            _opt(samples, "xpustat_encoder_percent", lbl, getattr(dev, "enc_pct", None))
+            _opt(samples, "xpustat_decoder_percent", lbl, getattr(dev, "dec_pct", None))
+            _opt(samples, "xpustat_ecc_uncorrected_total", lbl, getattr(dev, "ecc_uncorrected", None))
+            _opt(samples, "xpustat_ecc_corrected_total", lbl, getattr(dev, "ecc_corrected", None))
+            _opt(samples, "xpustat_throttled", lbl, getattr(dev, "throttled", None))
+            _opt(samples, "xpustat_healthy", lbl, getattr(dev, "healthy", None))
+            _opt(samples, "xpustat_pstate", lbl, getattr(dev, "pstate", None))
+            _opt(samples, "xpustat_energy_joules_total", lbl, getattr(dev, "energy_j", None))
+
             procs = getattr(dev, "processes", []) or []
             samples["xpustat_process_count"].append(
                 f"xpustat_process_count{lbl} {len(procs)}")
             for p in procs:
-                if p.gpu_mem_mb is None:
-                    continue
-                plbl = _labels({**base, "pid": p.pid, "user": p.username, "command": p.command})
-                samples["xpustat_process_memory_bytes"].append(
-                    f"xpustat_process_memory_bytes{plbl} {int(p.gpu_mem_mb) * _MIB}")
+                plbl = _labels({**base, "pid": p.pid, "user": p.username, "command": p.command,
+                                "container": getattr(p, "container", None)})
+                if p.gpu_mem_mb is not None:
+                    samples["xpustat_process_memory_bytes"].append(
+                        f"xpustat_process_memory_bytes{plbl} {int(p.gpu_mem_mb) * _MIB}")
+                _opt(samples, "xpustat_process_sm_percent", plbl, getattr(p, "sm_pct", None))
+                rss = getattr(p, "rss_mb", None)
+                if rss is not None:
+                    samples["xpustat_process_rss_bytes"].append(
+                        f"xpustat_process_rss_bytes{plbl} {int(rss) * _MIB}")
 
     for vendor, count in vendor_counts.items():
         samples["xpustat_scrape_devices"].append(
@@ -153,18 +190,25 @@ class _Handler(BaseHTTPRequestHandler):
     query = None  # set by serve()
 
     def do_GET(self) -> None:  # noqa: N802  (http.server API)
-        if self.path.split("?", 1)[0] not in ("/metrics", "/"):
+        path = self.path.split("?", 1)[0]
+        if path not in ("/metrics", "/", "/json"):
             self.send_response(404)
             self.end_headers()
             return
+        ctype = "text/plain; version=0.0.4; charset=utf-8"
         try:
-            body = to_prometheus(type(self).query()).encode("utf-8")
+            stats = type(self).query()
+            if path == "/json":
+                body = stats.to_json(metadata=True).encode("utf-8")
+                ctype = "application/json; charset=utf-8"
+            else:
+                body = to_prometheus(stats).encode("utf-8")
             status = 200
         except Exception as exc:  # never take the exporter down on a vendor hiccup
             body = f"# xpustat error: {exc}\n".encode("utf-8")
             status = 500
         self.send_response(status)
-        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -173,9 +217,11 @@ class _Handler(BaseHTTPRequestHandler):
         return
 
 
-def serve(port: int = 9400, host: str = "0.0.0.0", query=None, max_age: float = 0.0) -> None:
+def serve(port: int = 9400, host: str = "0.0.0.0", query=None, max_age: float = 0.0,
+          include_cpu: bool = False) -> None:
     """
-    Serve ``/metrics`` forever. Each scrape triggers a fresh ``query_all()``.
+    Serve ``/metrics`` (Prometheus text) and ``/json`` (``to_json(metadata=True)``,
+    read by ``xpustat --hosts``) forever. Each request triggers a fresh ``query_all()``.
 
     Args:
         port:  TCP port (default 9400, the dcgm-exporter convention).
@@ -184,10 +230,11 @@ def serve(port: int = 9400, host: str = "0.0.0.0", query=None, max_age: float = 
                :func:`xpustat.query_all`.
         max_age: with the default query, serve a result up to this many
                seconds old instead of re-querying on every scrape.
+        include_cpu: with the default query, also export the host CPU.
     """
     if query is None:
         from .xpu import query_all
-        query = (lambda: query_all(max_age=max_age)) if max_age > 0 else query_all
+        query = lambda: query_all(max_age=max_age if max_age > 0 else None, include_cpu=include_cpu)
 
     handler = type("XPUStatHandler", (_Handler,), {"query": staticmethod(query)})
     server = ThreadingHTTPServer((host, port), handler)

@@ -36,7 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
 from ._device import DeviceMixin
-from ._process import ProcessInfo, enrich_process
+from ._process import ProcessInfo, enrich_full
 
 _MIB = 1024 * 1024
 _ACCEL_TYPE = re.compile(r"accelerator type:\s*([\w-]+)", re.IGNORECASE)
@@ -180,9 +180,7 @@ def _parse_dashboard(output: str, accel_type: Optional[str] = None) -> List[TPUC
         if isinstance(proc, dict) and proc.get("pid"):
             try:
                 pid = int(proc["pid"])
-                username, command = enrich_process(pid, str(proc.get("name") or "?"))
-                processes.append(ProcessInfo(pid=pid, username=username,
-                                             command=command, gpu_mem_mb=None))
+                processes.append(enrich_full(pid, str(proc.get("name") or "?"), gpu_mem_mb=None))
             except (TypeError, ValueError):
                 pass
 
