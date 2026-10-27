@@ -81,3 +81,6 @@ publish_commands.txt
 
 # Local-only material (credentials, publish commands); never committed
 private/
+
+# Local planning notes
+TODO.md
