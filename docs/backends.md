@@ -176,8 +176,8 @@ Any package can add a vendor by exposing a collection class through the `xpustat
 | | |
 |---|---|
 | Key | `tenstorrent` |
-| Status | untested; written from the `tt-smi` log model in the `tt-smi` source |
+| Status | tested on Blackhole (4 × p300c, `tt-smi` 6.7.0); Wormhole untested |
 | Command | `tt-smi -s --snapshot_no_tty` |
 | Fields | `tt_device`, `bus_id`, `board_id`, `temp_c` from `asic_temperature`, `power_w`, `board_power_w`, `aiclk_mhz`, processes matched by their `device` field |
 
-`tt-smi` reports telemetry and processes, not DRAM usage, so the memory fields are 0 and the CLI shows the memory column as `N/A`. The device name is `Tenstorrent <board_type>`, for example `Tenstorrent n150 L`.
+`tt-smi` reports telemetry and processes, not DRAM usage, so the memory fields are 0 and the CLI shows the memory column as `N/A`. `tt-smi` lists its own snapshot process under every device; xpustat drops any `tt-smi` process. The device name is `Tenstorrent <board_type>`, for example `Tenstorrent n150 L`.

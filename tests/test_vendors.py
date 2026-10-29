@@ -381,6 +381,26 @@ def test_tenstorrent_parse():
     assert _parse_snapshot("nope") == [] and _parse_snapshot("[]") == []
 
 
+# Captured from tt-smi 6.7.0 on a Blackhole p300c box: tt-smi lists itself (the process running the
+# snapshot) as a user of every device, next to the real workload.
+_TT_SNAP_SELF = """{
+  "device_info": [
+    {"board_info": {"bus_id": "0000:01:00.0", "board_type": "p300c", "board_id": "0000046131924062"},
+     "telemetry": {"power": " 43.0", "board_power": "267.0", "aiclk": "1350", "asic_temperature": "51.4"}}
+  ],
+  "processes": [
+    {"pid": 13294, "user": "ttuser", "device": 0,
+     "cmdline": "/home/ttuser/.tenstorrent-venv/bin/python /home/ttuser/.local/bin/tt-smi -s --snapshot_no_tty"},
+    {"pid": 3066199, "user": "ttuser", "device": 0, "cmdline": "VLLM::EngineCore"}
+  ]
+}"""
+
+
+def test_tenstorrent_parse_drops_the_tt_smi_snapshot_process():
+    devs = _parse_snapshot(_TT_SNAP_SELF)
+    assert [p.pid for p in devs[0].processes] == [3066199]
+
+
 def test_new_backends_off_host_return_empty(monkeypatch):
     import shutil
     monkeypatch.setattr(shutil, "which", lambda *_: None)

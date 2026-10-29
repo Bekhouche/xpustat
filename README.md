@@ -20,7 +20,7 @@ A unified accelerator stat tool: `gpustat`, but for every vendor.
 | ✅ Tested | Apple | Apple M5 (10-core GPU) | IOKit (built into macOS) | `apple` |
 | 🔲 Untested | AWS | Neuron (Inferentia / Trainium) | `neuron-ls` | `neuron` |
 | 🔲 Untested | Google | Cloud TPU (v4 – v6e) | `tpu-info` | `tpu` |
-| 🔲 Untested | Tenstorrent | Wormhole / Blackhole | `tt-smi` | `tenstorrent` |
+| ✅ Tested | Tenstorrent | Blackhole p300c (Wormhole untested) | `tt-smi` | `tenstorrent` |
 | 🔲 Untested | NVIDIA | Jetson Nano / Xavier / Orin | `tegrastats` | `jetson` |
 | 🔲 Untested | Rebellions | ATOM / REBEL | `rbln-stat --json` | `rebellions` |
 | 🔲 Untested | FuriosaAI | RNGD / Warboy | `furiosa-smi` | `furiosa` |

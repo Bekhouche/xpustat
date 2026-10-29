@@ -153,6 +153,17 @@ def _num(value: Any) -> Optional[float]:
         return None
 
 
+def _is_tt_smi(cmdline: str) -> bool:
+    """True when ``cmdline`` is a ``tt-smi`` invocation.
+
+    ``tt-smi`` opens every device to take its snapshot and lists itself in
+    ``processes``, so without this filter each device would show the
+    ``xpustat`` query itself as a user. A ``tt-smi`` only watches telemetry,
+    so dropping every one of them does not hide a workload.
+    """
+    return any(os.path.basename(tok) == "tt-smi" for tok in cmdline.split())
+
+
 def _parse_snapshot(output: str) -> List[TenstorrentDeviceStat]:
     start = output.find("{")
     if start < 0:
@@ -173,6 +184,8 @@ def _parse_snapshot(output: str) -> List[TenstorrentDeviceStat]:
         except (TypeError, ValueError):
             continue
         cmdline = str(p.get("cmdline") or "")
+        if _is_tt_smi(cmdline):
+            continue
         fallback = os.path.basename(cmdline.split()[0]) if cmdline.strip() else "?"
         info = enrich_full(pid, fallback, gpu_mem_mb=None)
         if info.username == "?" and p.get("user"):
